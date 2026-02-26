@@ -1,0 +1,238 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  homes         Home[]
+  pushTokens    UserPushToken[]
+  notifications NotificationLog[]
+
+  @@map("users")
+}
+
+model Home {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  name      String
+  timezone  String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shellyIntegration ShellyIntegration?
+  devices           Device[]
+
+  @@index([userId])
+  @@map("homes")
+}
+
+model ShellyIntegration {
+  id     String @id @default(uuid()) @db.Uuid
+  homeId String @unique @map("home_id") @db.Uuid
+
+  clientId   String @default("shelly-diy") @map("client_id")
+  userApiUrl String @map("user_api_url")
+
+  authCode String? @map("auth_code")
+
+  accessToken          String?   @map("access_token")
+  refreshToken         String?   @map("refresh_token")
+  accessTokenExpiresAt DateTime? @map("access_token_expires_at") @db.Timestamptz(6)
+
+  status     String    @default("active")
+  lastSyncAt DateTime? @map("last_sync_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
+
+  @@map("shelly_integrations")
+}
+
+model Device {
+  id          String  @id @default(uuid()) @db.Uuid
+  homeId      String  @map("home_id") @db.Uuid
+  vendor      String
+  model       String?
+  displayName String  @map("display_name")
+
+  ipAddress  String? @map("ip_address") @db.Inet
+  macAddress String? @map("mac_address")
+
+  externalDeviceId String? @map("external_device_id")
+
+  status     String    @default("active")
+  lastSeenAt DateTime? @map("last_seen_at") @db.Timestamptz(6)
+
+  dataSource      String @default("shelly_cloud") @map("data_source")
+  telemetryConfig Json?  @map("telemetry_config") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  home        Home                @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  readings    DeviceReading[]
+  hourlyUsage DeviceUsageHourly[]
+  dailyUsage  DeviceUsageDaily[]
+  baselines   DeviceBaseline[]
+  anomalies   AnomalyEvent[]
+
+  @@unique([homeId, vendor, externalDeviceId], map: "devices_home_vendor_external_unique")
+  @@index([homeId])
+  @@map("devices")
+}
+
+model DeviceReading {
+  id       BigInt   @id @default(autoincrement())
+  deviceId String   @map("device_id") @db.Uuid
+  ts       DateTime @db.Timestamptz(6)
+
+  powerW   Decimal? @map("power_w") @db.Decimal(12, 4)
+  voltageV Decimal? @map("voltage_v") @db.Decimal(12, 4)
+  currentA Decimal? @map("current_a") @db.Decimal(12, 4)
+  pf       Decimal? @db.Decimal(8, 4)
+  relayOn  Boolean? @map("relay_on")
+
+  energyWh      Decimal? @map("energy_wh") @db.Decimal(12, 4)
+  energyDeltaWh Decimal? @map("energy_delta_wh") @db.Decimal(12, 4)
+
+  energyMinuteTs   BigInt? @map("energy_minute_ts")
+  energyByMinuteWh Json?   @map("energy_by_minute_wh") @db.JsonB
+
+  source     String @default("shelly_cloud")
+  rawPayload Json?  @map("raw_payload") @db.JsonB
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, ts])
+  @@map("device_readings")
+}
+
+model DeviceUsageHourly {
+  id       BigInt   @id @default(autoincrement())
+  deviceId String   @map("device_id") @db.Uuid
+  hourTs   DateTime @map("hour_ts") @db.Timestamptz(6)
+
+  energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
+  avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
+  maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  samplesCount Int      @map("samples_count")
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, hourTs], map: "device_usage_hourly_device_hour_unique")
+  @@index([deviceId])
+  @@map("device_usage_hourly")
+}
+
+model DeviceUsageDaily {
+  id       BigInt   @id @default(autoincrement())
+  deviceId String   @map("device_id") @db.Uuid
+  date     DateTime @db.Date
+
+  energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
+  avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
+  maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  samplesCount Int      @map("samples_count")
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, date], map: "device_usage_daily_device_date_unique")
+  @@index([deviceId])
+  @@map("device_usage_daily")
+}
+
+model DeviceBaseline {
+  id       String @id @default(uuid()) @db.Uuid
+  deviceId String @map("device_id") @db.Uuid
+
+  baselineType String @map("baseline_type")
+  windowDays   Int    @default(14) @map("window_days")
+  modelVersion String @map("model_version")
+  params       Json   @db.JsonB
+
+  trainedFrom DateTime @map("trained_from") @db.Timestamptz(6)
+  trainedTo   DateTime @map("trained_to") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@map("device_baselines")
+}
+
+model AnomalyEvent {
+  id       String @id @default(uuid()) @db.Uuid
+  deviceId String @map("device_id") @db.Uuid
+
+  detectedAt  DateTime @map("detected_at") @db.Timestamptz(6)
+  windowStart DateTime @map("window_start") @db.Timestamptz(6)
+  windowEnd   DateTime @map("window_end") @db.Timestamptz(6)
+
+  anomalyType String   @map("anomaly_type")
+  severity    Int      @db.SmallInt
+  score       Decimal? @db.Decimal(12, 4)
+
+  expectedValue Decimal? @map("expected_value") @db.Decimal(12, 4)
+  observedValue Decimal? @map("observed_value") @db.Decimal(12, 4)
+
+  details Json? @db.JsonB
+
+  device        Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  notifications NotificationLog[]
+
+  @@index([deviceId, detectedAt])
+  @@map("anomaly_events")
+}
+
+model UserPushToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  token      String    @unique
+  platform   String?
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt DateTime? @map("last_seen_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_push_tokens")
+}
+
+model NotificationLog {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  anomalyEventId String?  @map("anomaly_event_id") @db.Uuid
+  sentAt         DateTime @map("sent_at") @db.Timestamptz(6)
+  channel        String   @default("fcm")
+  status         String
+  errorMessage   String?  @map("error_message")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  anomalyEvent AnomalyEvent? @relation(fields: [anomalyEventId], references: [id], onDelete: SetNull)
+
+  @@index([userId, sentAt])
+  @@index([anomalyEventId])
+  @@map("notification_logs")
+}
