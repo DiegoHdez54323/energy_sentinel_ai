@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
+import { authRouter } from "../modules/auth/auth.routes.js";
 
 export function createApp() {
   const app = express();
@@ -14,6 +15,8 @@ export function createApp() {
   app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "Energy Sentinel AI API" });
   });
+
+  app.use("/auth", authRouter);
 
   return app;
 }
