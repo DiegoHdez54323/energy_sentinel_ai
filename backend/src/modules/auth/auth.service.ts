@@ -71,6 +71,16 @@ export async function loginUser(input: LoginInput) {
     throw new Error("INVALID_CREDENTIALS");
   }
 
+  await prisma.refreshToken.updateMany({
+    where: {
+      userId: user.id,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt: new Date(),
+    },
+  });
+
   const tokens = await issueTokenPair({ sub: user.id, email: user.email });
 
   return {
