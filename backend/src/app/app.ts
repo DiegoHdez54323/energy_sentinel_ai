@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import { authRouter } from "../modules/auth/auth.routes.js";
+import { homesRouter } from "../modules/homes/homes.routes.js";
 
 export function createApp() {
   const app = express();
@@ -17,6 +18,7 @@ export function createApp() {
   });
 
   app.use("/auth", authRouter);
+  app.use("/homes", homesRouter);
 
   return app;
 }
