@@ -1,17 +1,21 @@
 import type { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "./jwt.js";
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.header("authorization");
 
-  if (!authHeader?.startsWith("Bearer ")) {
+  if (!authHeader) {
     return res.status(401).json({ error: "UNAUTHORIZED" });
   }
 
-  const token = authHeader.slice("Bearer ".length).trim();
+  const [scheme, rawToken] = authHeader.split(" ");
+
+  if (scheme?.toLowerCase() !== "bearer" || !rawToken) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
 
   try {
-    const payload = verifyAccessToken(token);
+    const payload = await verifyAccessToken(rawToken.trim());
     req.user = payload;
     return next();
   } catch {
