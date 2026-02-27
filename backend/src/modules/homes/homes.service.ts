@@ -67,3 +67,4 @@ export async function deleteHomeById(userId: string, homeId: string) {
     throw new Error("HOME_NOT_FOUND");
   }
 }
+

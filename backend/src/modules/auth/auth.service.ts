@@ -4,7 +4,9 @@ import { signAccessToken } from "./jwt.js";
 import type { LoginInput, RegisterInput } from "./auth.schemas.js";
 
 export async function registerUser(input: RegisterInput) {
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
+  const existing = await prisma.user.findUnique({
+    where: { email: input.email },
+  });
   if (existing) {
     throw new Error("EMAIL_ALREADY_IN_USE");
   }
@@ -36,7 +38,10 @@ export async function loginUser(input: LoginInput) {
     throw new Error("INVALID_CREDENTIALS");
   }
 
-  const validPassword = await comparePassword(input.password, user.passwordHash);
+  const validPassword = await comparePassword(
+    input.password,
+    user.passwordHash,
+  );
   if (!validPassword) {
     throw new Error("INVALID_CREDENTIALS");
   }

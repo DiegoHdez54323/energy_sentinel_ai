@@ -34,7 +34,10 @@ function getHomeIdParam(req: Request): string {
 
 export async function createHomeHandler(req: Request, res: Response) {
   try {
-    const home = await createHome(getAuthUserId(req), req.body as CreateHomeInput);
+    const home = await createHome(
+      getAuthUserId(req),
+      req.body as CreateHomeInput,
+    );
     return res.status(201).json({ home });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
@@ -73,7 +76,11 @@ export async function getHomeByIdHandler(req: Request, res: Response) {
 
 export async function updateHomeByIdHandler(req: Request, res: Response) {
   try {
-    const home = await updateHomeById(getAuthUserId(req), getHomeIdParam(req), req.body as UpdateHomeInput);
+    const home = await updateHomeById(
+      getAuthUserId(req),
+      getHomeIdParam(req),
+      req.body as UpdateHomeInput,
+    );
     return res.status(200).json({ home });
   } catch (error) {
     if (error instanceof Error && error.message === "HOME_NOT_FOUND") {
