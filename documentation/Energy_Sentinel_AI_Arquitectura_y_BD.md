@@ -10,6 +10,8 @@ Energy Sentinel AI es una aplicación móvil (React Native) orientada al monitor
 
 ## 2. Arquitectura (Shelly Cloud + OAuth)
 
+
+**Decisión MVP:** 1 usuario de Energy Sentinel AI puede vincular **una sola** cuenta Shelly a la vez (relación 1:1).
 ### 2.1 Componentes
 
 - **App móvil (React Native):** autenticación propia, gestión de Homes y Devices, visualización de métricas y alertas.
@@ -42,14 +44,18 @@ Energy Sentinel AI es una aplicación móvil (React Native) orientada al monitor
 1. La app abre el flujo OAuth de Shelly (login/consent).
 2. Shelly redirige al callback con `state` y `code`.
 3. La app envía el `code` al backend.
-4. El backend decodifica el `code` para obtener `user_api_url` y realiza el intercambio en `/oauth/auth` para obtener `access_token` y `refresh_token`.
-5. El backend guarda los tokens y el `user_api_url` en `shelly_integrations`.
+4. El backend guarda el `auth_code` (el `code`) y lo usa para obtener/renovar un `access_token` en `/<user_api_url>/oauth/auth` cuando sea necesario.
+5. El backend persiste `user_api_url`, `access_token` y `access_token_expires_at` en `shelly_integrations`.  
+   **La app móvil no almacena tokens de Shelly** y nunca llama directamente a la API de Shelly Cloud.
 
 ### 3.3 Descubrir e importar dispositivos
 
-- El backend consulta `/device/all_status` con `Authorization: Bearer <access_token>`.
-- Se obtiene lista de dispositivos y sus métricas actuales.
-- El usuario selecciona qué dispositivos importar; el backend crea/actualiza registros en `devices` vinculados al `home_id`.
+- El backend expone un endpoint tipo `GET /shelly/devices/discovered` (ilustrativo) que **no escribe en BD**.
+- Ese endpoint consulta Shelly `GET /device/all_status` con `Authorization: Bearer <access_token>` y devuelve una lista normalizada para UI.
+- El usuario selecciona qué dispositivos importar a un Home y asigna `display_name`.
+- El backend crea/actualiza registros en `devices` vinculados al `home_id`.
+- Para evitar duplicados y facilitar el flujo multi-home, el backend puede filtrar y mostrar **solo dispositivos no registrados** comparando `_dev_info.id` contra `devices.external_device_id`.
+
 
 ### 3.4 Sincronización periódica (polling) y persistencia
 
@@ -72,13 +78,13 @@ Energy Sentinel AI es una aplicación móvil (React Native) orientada al monitor
 
 ### 4.1 Seguridad y manejo de tokens
 
-- La app móvil no almacena tokens de Shelly (`access` / `refresh`). Todo token se guarda y gestiona exclusivamente en el backend.
-- El backend guarda `auth_code` (el `code` devuelto por el callback OAuth de Shelly).
-- El backend usa el `auth_code` para reemitir el `access_token` sin requerir que el usuario vuelva a iniciar sesión.
-- **Regla de renovación:** antes de llamar a Shelly Cloud, si `access_token_expires_at <= now() + margen` (ej. 60–120s), entonces se ejecuta la renovación.
-- **Renovación (estrategia MVP):** el backend llama a `https://<user_api_url>/oauth/auth` con `grant_type=code` y el `auth_code` almacenado, y actualiza `access_token` y `access_token_expires_at`.
+- La app móvil no almacena tokens de Shelly. Todo token se guarda y gestiona exclusivamente en el backend.
+- El backend guarda `auth_code` (el `code` devuelto por el callback OAuth de Shelly) para poder reemitir un `access_token` sin requerir re-login.
+- El backend mantiene `access_token` y `access_token_expires_at` para ejecutar polling y endpoints de descubrimiento/importación.
+- **Regla de renovación:** antes de llamar a Shelly Cloud, si `access_token_expires_at <= now() + margen` (ej. 60–120s), el backend reemite un nuevo `access_token` usando `/<user_api_url>/oauth/auth`.
+- `user_api_url` puede cambiar (migración de servidor). Por ello se persiste y se **actualiza** cada vez que se reemite el token, usando el valor más reciente disponible.
 - Si la renovación falla (revocación, credenciales cambiadas, token inválido), la integración cambia a `needs_reauth` y el usuario debe reconectar Shelly.
-- `user_api_url` se obtiene del `auth_code` o del `access_token` y se persiste para enrutar correctamente las llamadas.
+
 
 ### 4.2 Inventario vs telemetría
 
@@ -94,9 +100,12 @@ Energy Sentinel AI es una aplicación móvil (React Native) orientada al monitor
 
 ### 4.4 Agregación (hourly y daily)
 
-- `device_usage_hourly.energy_wh` = suma de `energy_delta_wh` en la hora (excluyendo `NULL`).
-- `device_usage_daily.energy_wh` = suma de `energy_delta_wh` en el día según `homes.timezone`.
+- `device_usage_hourly` almacena **1 fila por dispositivo por hora** (bucket fijo del reloj).  
+  `energy_wh` = suma de `energy_delta_wh` dentro del rango `[hour_ts, hour_ts + 1h)`.
+- `device_usage_daily` almacena **1 fila por dispositivo por día** (según `homes.timezone`).  
+  Se recomienda calcularlo desde `device_usage_hourly` (24 filas) para reducir costo de cómputo.
 - Los jobs deben ser idempotentes mediante `UPSERT` usando los índices únicos definidos.
+
 
 ### 4.5 Estado online/offline
 
@@ -142,12 +151,11 @@ Las siguientes tablas documentan cada entidad y sus atributos. La columna **Desc
 | Atributo                  | Descripción                                                                                                                        |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                      | Identificador único de la integración (UUID).                                                                                      |
-| `home_id`                 | Home al que pertenece la integración (FK a `homes.id`).                                                                            |
+| `user_id`                 | Usuario al que pertenece la integración (FK a `users.id`). **Relación 1:1 (MVP)**.                                                    |
 | `client_id`               | Client ID OAuth utilizado; por defecto `shelly-diy` para integraciones DIY.                                                        |
 | `user_api_url`            | Host base de Shelly Cloud para el usuario, obtenido del `code` / `access_token` (enruta las llamadas).                             |
 | `auth_code`               | Código devuelto por el flujo OAuth (formato JWT-like). Se almacena para reemitir `access_token` sin solicitar re-login al usuario. |
-| `access_token`            | Bearer token (JWT) de Shelly Cloud, de vida corta.                                                                                 |
-| `refresh_token`           | Token de refresco para renovar el `access_token` cuando expire.                                                                    |
+| `access_token`            | Bearer token (JWT) de Shelly Cloud usado por el backend para llamadas HTTP. No se expone a la app móvil.                               |
 | `access_token_expires_at` | Fecha/hora estimada de expiración del `access_token` (opcional; puede derivarse del JWT).                                          |
 | `status`                  | Estado de la integración: `active`, `needs_reauth`, `revoked`.                                                                     |
 | `last_sync_at`            | Marca temporal del último sync exitoso contra Shelly Cloud.                                                                        |
@@ -159,13 +167,15 @@ Las siguientes tablas documentan cada entidad y sus atributos. La columna **Desc
 | Atributo             | Descripción                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------- |
 | `id`                 | Identificador interno del dispositivo (UUID).                                               |
-| `home_id`            | Home al que pertenece el dispositivo (FK a `homes.id`).                                     |
+| `home_id`            | Home al que pertenece el dispositivo (FK a `homes.id`).                                                          |
+| `user_id`            | Usuario dueño del dispositivo (FK a `users.id`). Se denormaliza para consultas rápidas y evitar duplicados.       |
 | `vendor`             | Proveedor/fabricante (por ejemplo, `shelly`).                                               |
+| `device_code`        | Código/modelo reportado por Shelly (ej. `S4PL-00116US`). Útil para UI y compatibilidad por tipo.                       |
 | `model`              | Modelo del dispositivo (si se detecta o se captura).                                        |
 | `display_name`       | Nombre visible configurado por el usuario (por ejemplo, `Pantalla Sala`).                   |
 | `ip_address`         | IP local (opcional). Útil para modo LAN futuro o diagnóstico.                               |
 | `mac_address`        | Dirección MAC (opcional). Útil para inventario y troubleshooting.                           |
-| `external_device_id` | Identificador del dispositivo en Shelly Cloud. Se guarda como texto por formatos variables. |
+| `external_device_id` | Identificador del dispositivo en Shelly Cloud (`_dev_info.id`). Se usa para mapear lecturas y evitar duplicados.        |
 | `status`             | Estado lógico: `active`, `disabled`, etc.                                                   |
 | `last_seen_at`       | Última vez que se obtuvo telemetría válida para el dispositivo.                             |
 | `data_source`        | Origen de datos principal: `shelly_cloud`, `shelly_lan`, `manual_import`.                   |

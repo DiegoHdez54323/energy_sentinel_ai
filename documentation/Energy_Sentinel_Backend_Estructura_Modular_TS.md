@@ -112,10 +112,15 @@ src/
 
 **Responsabilidades principales:**
 
-- Endpoints de integración OAuth: `start`, `callback`, `reconnect`, `sync`.
-- Gestión de tokens y `user_api_url` por Home.
+- Endpoints de integración OAuth: `start`, `callback`, `reconnect`.
+- Persistencia 1:1 por usuario en `shelly_integrations` (guardar `auth_code`, `access_token`, `access_token_expires_at`, `user_api_url`).
 - Cliente HTTP encapsulado (`shelly.client.ts`) y mapeo de payloads (`shelly.mapper.ts`).
-- Función central `getValidAccessToken(homeId)` para reemitir/renovar access tokens.
+- Función central `getValidAccessToken(userId)`:
+  - devuelve un `access_token` vigente (si está por expirar, reemite usando `auth_code`)
+  - actualiza `user_api_url` si cambia
+- Endpoint “discover” stateless (ilustrativo): `GET /shelly/devices/discovered` (no escribe en BD).
+- Endpoint de importación (invocado desde devices/homes): crear filas en `devices` con `external_device_id` y `display_name`.
+
 
 **Criterio de “listo”:**
 
@@ -137,7 +142,7 @@ src/
 
 **Responsabilidades principales:**
 
-- Job de polling (cada 60s): por integración activa, valida token, consulta `/device/all_status`, inserta lecturas.
+- Job de polling (cada 60s): por integración activa (usuario), valida token, consulta `/device/all_status`, inserta lecturas.
 - Jobs de agregación (hourly/daily): `UPSERT` por índices únicos.
 - Jobs de baseline/anomalías (fase 2).
 
@@ -164,8 +169,8 @@ src/
 1. **Base de datos + Prisma schema + migración inicial.**
 2. **Módulo auth** (`register/login + JWT`).
 3. **Módulo homes** (CRUD).
-4. **Módulo shelly:** callback (guardar integración + `auth_code`).
-5. **Módulo shelly:** sync (importar devices).
+4. **Módulo shelly:** callback (guardar integración 1:1 por usuario + `auth_code`).
+5. **Módulo shelly:** discover (stateless) + importación de devices a Home.
 6. **Módulo telemetry:** inserción de readings + endpoint latest.
 7. **Job polling** (cada 60s).
 8. **Jobs de agregación** hourly/daily.
