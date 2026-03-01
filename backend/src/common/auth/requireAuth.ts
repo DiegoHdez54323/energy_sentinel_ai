@@ -1,7 +1,11 @@
 import type { NextFunction, Request, Response } from "express";
-import { verifyAccessToken } from "./jwt.js";
+import { verifyAccessToken } from "../../modules/auth/jwt.js";
 
-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
   const authHeader = req.header("authorization");
 
   if (!authHeader) {

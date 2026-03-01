@@ -29,9 +29,18 @@ export async function listHomes(userId: string) {
   });
 }
 
-export async function getHomeById(userId: string, homeId: string) {
+export async function updateHomeById(homeId: string, input: UpdateHomeInput) {
+  const updated = await prisma.home.updateMany({
+    where: { id: homeId },
+    data: input,
+  });
+
+  if (updated.count === 0) {
+    throw new Error("HOME_NOT_FOUND");
+  }
+
   const home = await prisma.home.findFirst({
-    where: { id: homeId, userId },
+    where: { id: homeId },
     select: homeSelect,
   });
 
@@ -42,25 +51,9 @@ export async function getHomeById(userId: string, homeId: string) {
   return home;
 }
 
-export async function updateHomeById(userId: string, homeId: string, input: UpdateHomeInput) {
-  const updated = await prisma.home.updateMany({
-    where: { id: homeId, userId },
-    data: input,
-  });
-
-  if (updated.count === 0) {
-    throw new Error("HOME_NOT_FOUND");
-  }
-
-  return prisma.home.findFirstOrThrow({
-    where: { id: homeId, userId },
-    select: homeSelect,
-  });
-}
-
-export async function deleteHomeById(userId: string, homeId: string) {
+export async function deleteHomeById(homeId: string) {
   const deleted = await prisma.home.deleteMany({
-    where: { id: homeId, userId },
+    where: { id: homeId },
   });
 
   if (deleted.count === 0) {

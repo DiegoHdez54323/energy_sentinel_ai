@@ -124,7 +124,8 @@ test("Delete elimina y luego devuelve 404 en lectura", async () => {
   const deleteResponse = await request(app)
     .delete(`/homes/${homeId}`)
     .set("authorization", `Bearer ${userA.token}`);
-  assert.equal(deleteResponse.status, 204);
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(deleteResponse.body.ok, true);
 
   const getAfterDeleteResponse = await request(app)
     .get(`/homes/${homeId}`)
