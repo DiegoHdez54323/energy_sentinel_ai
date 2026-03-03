@@ -1,6 +1,12 @@
 import { Router } from "express";
-import { loginHandler, logoutHandler, meHandler, refreshHandler, registerHandler } from "./auth.controller.js";
-import { requireAuth } from "./requireAuth.js";
+import {
+  loginHandler,
+  logoutHandler,
+  meHandler,
+  refreshHandler,
+  registerHandler,
+} from "./auth.controller.js";
+import { requireAuth } from "../../common/auth/requireAuth.js";
 
 export const authRouter = Router();
 
