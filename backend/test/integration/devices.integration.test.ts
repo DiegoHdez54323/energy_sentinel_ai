@@ -17,6 +17,7 @@ async function registerUser(email: string) {
 
   return {
     token: registerResponse.body.accessToken as string,
+    refreshToken: registerResponse.body.refreshToken as string,
     userId: registerResponse.body.user.id as string,
   };
 }
@@ -133,6 +134,36 @@ test("Usuario crea device dentro de su home y puede listarlo y ver detalle", asy
   assert.equal(detailResponse.status, 200);
   assert.equal(detailResponse.body.device.id, deviceId);
   assert.equal(detailResponse.body.device.homeId, home.id);
+});
+
+test("Listar devices por home no mezcla devices de otro home del mismo usuario", async () => {
+  const suffix = Date.now() + 10;
+  const user = await registerUser(`devices-it-a-${suffix}@example.com`);
+  const homeA = await createHome(user.token, {
+    name: "devices-list-home-a",
+    timezone: "America/Mexico_City",
+  });
+  const homeB = await createHome(user.token, {
+    name: "devices-list-home-b",
+    timezone: "America/Bogota",
+  });
+
+  const deviceA = await createDevice(user.token, homeA.id, {
+    externalDeviceId: "device-list-a",
+  });
+  const deviceB = await createDevice(user.token, homeB.id, {
+    externalDeviceId: "device-list-b",
+  });
+
+  const listResponse = await request(app)
+    .get(`/homes/${homeA.id}/devices`)
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(listResponse.status, 200);
+  assert.equal(listResponse.body.devices.length, 1);
+  assert.equal(listResponse.body.devices[0].id, deviceA.id);
+  assert.equal(listResponse.body.devices[0].homeId, homeA.id);
+  assert.notEqual(listResponse.body.devices[0].id, deviceB.id);
 });
 
 test("Ownership evita operar homes y devices de otros usuarios", async () => {
@@ -279,6 +310,123 @@ test("Se valida home destino y unicidad del inventario", async () => {
     .send({ homeId: homeB.id });
   assert.equal(moveToForeignHome.status, 404);
   assert.equal(moveToForeignHome.body.error, "HOME_NOT_FOUND");
+});
+
+test("Rutas de devices rechazan request sin token", async () => {
+  const suffix = Date.now() + 11;
+  const user = await registerUser(`devices-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, {
+    name: "devices-auth-home",
+    timezone: "America/Lima",
+  });
+  const device = await createDevice(user.token, home.id, {
+    externalDeviceId: "device-auth-check",
+  });
+
+  const createWithoutToken = await request(app)
+    .post(`/homes/${home.id}/devices`)
+    .send({
+      vendor: "shelly",
+      displayName: "Unauthorized Device",
+      externalDeviceId: "unauthorized-device",
+    });
+  assert.equal(createWithoutToken.status, 401);
+  assert.equal(createWithoutToken.body.error, "UNAUTHORIZED");
+
+  const listWithoutToken = await request(app).get(`/homes/${home.id}/devices`);
+  assert.equal(listWithoutToken.status, 401);
+  assert.equal(listWithoutToken.body.error, "UNAUTHORIZED");
+
+  const detailWithoutToken = await request(app).get(`/devices/${device.id}`);
+  assert.equal(detailWithoutToken.status, 401);
+  assert.equal(detailWithoutToken.body.error, "UNAUTHORIZED");
+
+  const patchWithoutToken = await request(app)
+    .patch(`/devices/${device.id}`)
+    .send({ displayName: "Blocked" });
+  assert.equal(patchWithoutToken.status, 401);
+  assert.equal(patchWithoutToken.body.error, "UNAUTHORIZED");
+
+  const deleteWithoutToken = await request(app).delete(`/devices/${device.id}`);
+  assert.equal(deleteWithoutToken.status, 401);
+  assert.equal(deleteWithoutToken.body.error, "UNAUTHORIZED");
+});
+
+test("Rutas de devices rechazan tokens invalidos o con esquema incorrecto", async () => {
+  const suffix = Date.now() + 12;
+  const user = await registerUser(`devices-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, {
+    name: "devices-invalid-token-home",
+    timezone: "America/Santiago",
+  });
+
+  const invalidSchemeResponse = await request(app)
+    .get(`/homes/${home.id}/devices`)
+    .set("authorization", "Basic abc");
+  assert.equal(invalidSchemeResponse.status, 401);
+  assert.equal(invalidSchemeResponse.body.error, "UNAUTHORIZED");
+
+  const invalidTokenResponse = await request(app)
+    .get(`/homes/${home.id}/devices`)
+    .set("authorization", "Bearer not-a-jwt");
+  assert.equal(invalidTokenResponse.status, 401);
+  assert.equal(invalidTokenResponse.body.error, "UNAUTHORIZED");
+});
+
+test("Rutas de devices rechazan refresh token usado como bearer", async () => {
+  const suffix = Date.now() + 13;
+  const user = await registerUser(`devices-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, {
+    name: "devices-refresh-token-home",
+    timezone: "America/Guayaquil",
+  });
+
+  const response = await request(app)
+    .get(`/homes/${home.id}/devices`)
+    .set("authorization", `Bearer ${user.refreshToken}`);
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body.error, "UNAUTHORIZED");
+});
+
+test("POST /homes/:homeId/devices valida body invalido", async () => {
+  const suffix = Date.now() + 14;
+  const user = await registerUser(`devices-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, {
+    name: "devices-invalid-body-home",
+    timezone: "America/Costa_Rica",
+  });
+
+  const missingVendorResponse = await request(app)
+    .post(`/homes/${home.id}/devices`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      displayName: "Missing Vendor",
+      externalDeviceId: "missing-vendor",
+    });
+  assert.equal(missingVendorResponse.status, 400);
+  assert.equal(missingVendorResponse.body.error, "INVALID_BODY");
+
+  const invalidDisplayNameResponse = await request(app)
+    .post(`/homes/${home.id}/devices`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      vendor: "shelly",
+      displayName: "   ",
+      externalDeviceId: "invalid-display-name",
+    });
+  assert.equal(invalidDisplayNameResponse.status, 400);
+  assert.equal(invalidDisplayNameResponse.body.error, "INVALID_BODY");
+
+  const missingExternalDeviceIdResponse = await request(app)
+    .post(`/homes/${home.id}/devices`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      vendor: "shelly",
+      displayName: "Missing External Device Id",
+    });
+  assert.equal(missingExternalDeviceIdResponse.status, 400);
+  assert.equal(missingExternalDeviceIdResponse.body.error, "INVALID_BODY");
 });
 
 test("Delete y validaciones de params/body responden como se espera", async () => {
