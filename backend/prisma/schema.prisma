@@ -8,6 +8,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  
 }
 
 model User {
@@ -25,6 +26,7 @@ model User {
   pushTokens    UserPushToken[]
   notifications NotificationLog[]
   refreshTokens RefreshToken[]
+  shellyOauthStates ShellyOAuthState[]
 
   @@map("users")
 }
@@ -80,6 +82,21 @@ model ShellyIntegration {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("shelly_integrations")
+}
+
+model ShellyOAuthState {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  state      String   @unique
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("shelly_oauth_states")
 }
 
 model Device {

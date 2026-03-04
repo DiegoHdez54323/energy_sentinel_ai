@@ -30,7 +30,12 @@ export function validateRequest(schemas: SchemaBag) {
       if (!parsed.success) {
         return res.status(400).json({ error: "INVALID_QUERY", details: parsed.error.flatten() });
       }
-      req.query = parsed.data as Request["query"];
+      // Express 5 exposes req.query via a getter-only property.
+      Object.defineProperty(req, "query", {
+        value: parsed.data as Request["query"],
+        configurable: true,
+        writable: true,
+      });
     }
 
     return next();
