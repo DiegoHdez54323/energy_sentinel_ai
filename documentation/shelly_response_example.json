@@ -1,0 +1,98 @@
+{
+  "isok": true,
+  "data": {
+    "devices_status": {
+      "58e6c50a5b38": {
+        "ws": {
+          "connected": false
+        },
+        "matter": {
+          "num_fabrics": 0,
+          "commissionable": false
+        },
+        "_updated": "2026-03-04 20:25:36",
+        "id": "58e6c50a5b38",
+        "serial": 1502,
+        "bthome": {
+          "errors": ["bluetooth_disabled"]
+        },
+        "sys": {
+          "time": "14:14",
+          "unixtime": 1772655245,
+          "mac": "58E6C50A5B38",
+          "restart_required": false,
+          "last_sync_ts": 1772655245,
+          "uptime": 222666,
+          "ram_size": 341936,
+          "ram_free": 175060,
+          "ram_min_free": 35296,
+          "fs_size": 917504,
+          "fs_free": 471040,
+          "cfg_rev": 14,
+          "kvs_rev": 0,
+          "schedule_rev": 0,
+          "webhook_rev": 0,
+          "btrelay_rev": 0,
+          "available_updates": {},
+          "reset_reason": 4,
+          "utc_offset": -21600
+        },
+        "plugs_ui": {},
+        "ts": 1772655931.23,
+        "illuminance:0": {
+          "id": 0,
+          "illumination": "dark"
+        },
+        "ble": {},
+        "code": "S4PL-00116US",
+        "cloud": {
+          "connected": true
+        },
+        "wifi": {
+          "sta_ip": "192.168.2.18",
+          "status": "got ip",
+          "ssid": "Aruba",
+          "bssid": "1c:28:af:9e:0e:02",
+          "rssi": -54,
+          "sta_ip6": [
+            "fe80::5ae6:c5ff:fe0a:5b38",
+            "2806:261:484:867f:5ae6:c5ff:fe0a:5b38"
+          ]
+        },
+        "mqtt": {
+          "connected": false
+        },
+        "switch:0": {
+          "apower": 40.1,
+          "id": 0,
+          "source": "WS_in",
+          "output": true,
+          "voltage": 123.8,
+          "freq": 60.02,
+          "current": 0.448,
+          "aenergy": {
+            "by_minute": [476.375, 595.469, 595.469],
+            "minute_ts": 1772655900,
+            "total": 4759.617
+          },
+          "ret_aenergy": {
+            "by_minute": [0, 0, 0],
+            "minute_ts": 1772655900,
+            "total": 0
+          },
+          "temperature": {
+            "tC": 46.7,
+            "tF": 116
+          }
+        },
+        "_dev_info": {
+          "id": "58e6c50a5b38",
+          "gen": "G2",
+          "code": "S4PL-00116US",
+          "online": true
+        }
+      }
+    },
+    "pending_notifications": {}
+  }
+}

@@ -9,6 +9,18 @@ import { getValidShellyAccessToken } from "../../src/modules/shelly/shelly.servi
 const app = createApp();
 const originalFetch = globalThis.fetch;
 
+type ImportedDeviceResponse = {
+  externalDeviceId: string;
+  vendor: string;
+  displayName: string;
+  deviceCode: string | null;
+  ipAddress: string | null;
+  macAddress: string | null;
+  status: string;
+  lastSeenAt: string | null;
+  dataSource: string;
+};
+
 function buildUnsignedJwt(payload: Record<string, unknown>): string {
   const header = { alg: "none", typ: "JWT" };
 
@@ -32,6 +44,19 @@ async function registerUser(email: string) {
     token: registerResponse.body.accessToken as string,
     userId: registerResponse.body.user.id as string,
   };
+}
+
+async function createHome(token: string, suffix: number) {
+  const response = await request(app)
+    .post("/homes")
+    .set("authorization", `Bearer ${token}`)
+    .send({
+      name: `home-${suffix}`,
+      timezone: "America/Mexico_City",
+    });
+
+  assert.equal(response.status, 201);
+  return response.body.home as { id: string };
 }
 
 test.afterEach(() => {
@@ -64,6 +89,388 @@ test("POST /integrations/shelly/refresh requiere auth", async () => {
   assert.equal(response.body.error, "UNAUTHORIZED");
 });
 
+test("POST /integrations/shelly/devices/discover requiere auth", async () => {
+  const response = await request(app).post("/integrations/shelly/devices/discover");
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body.error, "UNAUTHORIZED");
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import requiere auth", async () => {
+  const response = await request(app).post("/integrations/shelly/homes/00000000-0000-0000-0000-000000000000/devices/import");
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body.error, "UNAUTHORIZED");
+});
+
+test("POST /integrations/shelly/devices/discover devuelve 404 sin integration", async () => {
+  const suffix = Date.now() + 150;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+
+  const response = await request(app)
+    .post("/integrations/shelly/devices/discover")
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error, "SHELLY_INTEGRATION_NOT_FOUND");
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import devuelve 404 sin integration", async () => {
+  const suffix = Date.now() + 156;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, suffix);
+
+  const response = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-without-integration",
+          displayName: "Device without integration",
+        },
+      ],
+    });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error, "SHELLY_INTEGRATION_NOT_FOUND");
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import valida params y body", async () => {
+  const suffix = Date.now() + 157;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+
+  const invalidParams = await request(app)
+    .post("/integrations/shelly/homes/not-a-uuid/devices/import")
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-any",
+          displayName: "Any",
+        },
+      ],
+    });
+  assert.equal(invalidParams.status, 400);
+  assert.equal(invalidParams.body.error, "INVALID_PARAMS");
+
+  const home = await createHome(user.token, suffix);
+
+  const invalidBodyMissingDevices = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({});
+  assert.equal(invalidBodyMissingDevices.status, 400);
+  assert.equal(invalidBodyMissingDevices.body.error, "INVALID_BODY");
+
+  const invalidBodyEmptyDevices = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({ devices: [] });
+  assert.equal(invalidBodyEmptyDevices.status, 400);
+  assert.equal(invalidBodyEmptyDevices.body.error, "INVALID_BODY");
+
+  const invalidBodyMissingDisplayName = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-any",
+        },
+      ],
+    });
+  assert.equal(invalidBodyMissingDisplayName.status, 400);
+  assert.equal(invalidBodyMissingDisplayName.body.error, "INVALID_BODY");
+});
+
+test("POST /integrations/shelly/devices/discover clasifica nuevos y conocidos y actualiza lastSyncAt", async () => {
+  const suffix = Date.now() + 151;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, suffix);
+  const userApiUrl = "https://shelly-discover-1.shelly.cloud";
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const accessToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken,
+      accessTokenExpiresAt: new Date(exp * 1000),
+      status: "active",
+      lastSyncAt: null,
+    },
+  });
+
+  await prisma.device.create({
+    data: {
+      userId: user.userId,
+      homeId: home.id,
+      vendor: "shelly",
+      displayName: "Existing Device",
+      externalDeviceId: "ext-existing",
+      status: "active",
+      dataSource: "shelly_cloud",
+    },
+  });
+
+  let fetchUrl = "";
+  let authorizationHeader = "";
+  globalThis.fetch = (async (input, init) => {
+    fetchUrl = String(input);
+    authorizationHeader = new Headers(init?.headers).get("authorization") ?? "";
+
+    return new Response(JSON.stringify({
+      "ext-existing": {
+        id: "ext-existing",
+        code: "SPSW-001",
+        mac: "A1:B2:C3:D4:E5:F6",
+        ip: "192.168.1.10",
+        online: true,
+        name: "Shelly Existing",
+      },
+      "ext-new": {
+        id: "ext-new",
+        code: "SPSW-002",
+        _info: {
+          mac: "F6:E5:D4:C3:B2:A1",
+          ip: "192.168.1.11",
+          online: false,
+        },
+        name: "Shelly New",
+      },
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post("/integrations/shelly/devices/discover")
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(fetchUrl, "https://shelly-discover-1.shelly.cloud/device/all_status?show_info=true&no_shared=true");
+  assert.equal(authorizationHeader, `Bearer ${accessToken}`);
+
+  assert.equal(response.body.discovery.counts.totalShelly, 2);
+  assert.equal(response.body.discovery.counts.new, 1);
+  assert.equal(response.body.discovery.counts.alreadyKnown, 1);
+  assert.equal(response.body.discovery.counts.invalid, 0);
+
+  assert.equal(response.body.discovery.newDevices.length, 1);
+  assert.equal(response.body.discovery.newDevices[0].externalDeviceId, "ext-new");
+  assert.equal(response.body.discovery.newDevices[0].isOnline, false);
+
+  assert.equal(response.body.discovery.alreadyKnown.length, 1);
+  assert.equal(response.body.discovery.alreadyKnown[0].externalDeviceId, "ext-existing");
+  assert.equal(response.body.discovery.alreadyKnown[0].displayName, "Existing Device");
+
+  const integration = await prisma.shellyIntegration.findUnique({
+    where: { userId: user.userId },
+  });
+  assert.ok(integration?.lastSyncAt);
+});
+
+test("POST /integrations/shelly/devices/discover reintenta con refresh cuando Shelly invalida token", async () => {
+  const suffix = Date.now() + 152;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const userApiUrl = "https://shelly-discover-retry.shelly.cloud";
+  const oldExp = Math.floor(Date.now() / 1000) + 3600;
+  const oldToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp: oldExp,
+  });
+  const refreshedExp = Math.floor(Date.now() / 1000) + 7200;
+  const refreshedToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp: refreshedExp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken: oldToken,
+      accessTokenExpiresAt: new Date(oldExp * 1000),
+      status: "active",
+    },
+  });
+
+  let discoveryCalls = 0;
+  let exchangeCalls = 0;
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+
+    if (url.endsWith("/oauth/auth")) {
+      exchangeCalls += 1;
+      return new Response(JSON.stringify({ access_token: refreshedToken }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url.includes("/device/all_status")) {
+      discoveryCalls += 1;
+      if (discoveryCalls === 1) {
+        return new Response(JSON.stringify({
+          isok: false,
+          error: "UNAUTHORIZED",
+          errors: {
+            invalid_token: "expired",
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        "ext-retry": {
+          id: "ext-retry",
+          online: true,
+          _info: {
+            ip: "192.168.1.15",
+            mac: "AA:BB:CC:DD:EE:11",
+          },
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ error: "unexpected_url" }), { status: 500 });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post("/integrations/shelly/devices/discover")
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(discoveryCalls, 2);
+  assert.equal(exchangeCalls, 1);
+  assert.equal(response.body.discovery.counts.new, 1);
+
+  const integration = await prisma.shellyIntegration.findUnique({
+    where: { userId: user.userId },
+  });
+  assert.ok(integration);
+  assert.equal(integration.accessToken, refreshedToken);
+  assert.equal(integration.status, "active");
+});
+
+test("POST /integrations/shelly/devices/discover responde 502 cuando Shelly falla sin invalid_token", async () => {
+  const suffix = Date.now() + 158;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const userApiUrl = "https://shelly-discover-error.shelly.cloud";
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const accessToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken,
+      accessTokenExpiresAt: new Date(exp * 1000),
+      status: "active",
+    },
+  });
+
+  globalThis.fetch = (async () => {
+    return new Response(JSON.stringify({
+      isok: false,
+      error: "INTERNAL_ERROR",
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post("/integrations/shelly/devices/discover")
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(response.status, 502);
+  assert.equal(response.body.error, "SHELLY_DISCOVERY_FAILED");
+});
+
+test("POST /integrations/shelly/devices/discover extrae ip/mac/online desde data.devices_status", async () => {
+  const suffix = Date.now() + 155;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const userApiUrl = "https://shelly-discover-structure.shelly.cloud";
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const accessToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken,
+      accessTokenExpiresAt: new Date(exp * 1000),
+      status: "active",
+    },
+  });
+
+  globalThis.fetch = (async () => {
+    return new Response(JSON.stringify({
+      isok: true,
+      data: {
+        devices_status: {
+          "58e6c50a5b38": {
+            id: "58e6c50a5b38",
+            code: "S4PL-00116US",
+            sys: { mac: "58E6C50A5B38" },
+            wifi: { sta_ip: "192.168.2.18" },
+            cloud: { connected: true },
+            _dev_info: { online: true },
+          },
+        },
+      },
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post("/integrations/shelly/devices/discover")
+    .set("authorization", `Bearer ${user.token}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.discovery.counts.totalShelly, 1);
+  assert.equal(response.body.discovery.counts.new, 1);
+  assert.equal(response.body.discovery.newDevices[0].externalDeviceId, "58e6c50a5b38");
+  assert.equal(response.body.discovery.newDevices[0].deviceCode, "S4PL-00116US");
+  assert.equal(response.body.discovery.newDevices[0].ipAddress, "192.168.2.18");
+  assert.equal(response.body.discovery.newDevices[0].macAddress, "58E6C50A5B38");
+  assert.equal(response.body.discovery.newDevices[0].isOnline, true);
+});
+
 test("GET /integrations/shelly devuelve not_connected cuando no existe integration", async () => {
   const suffix = Date.now() + 101;
   const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
@@ -82,6 +489,287 @@ test("GET /integrations/shelly devuelve not_connected cuando no existe integrati
     needsRefresh: false,
     lastSyncAt: null,
   });
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import valida ownership de home", async () => {
+  const suffix = Date.now() + 153;
+  const userA = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const userB = await registerUser(`shelly-it-b-${suffix}@example.com`);
+  const homeB = await createHome(userB.token, suffix);
+
+  const response = await request(app)
+    .post(`/integrations/shelly/homes/${homeB.id}/devices/import`)
+    .set("authorization", `Bearer ${userA.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-any",
+          displayName: "Device A",
+        },
+      ],
+    });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.error, "HOME_NOT_FOUND");
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import inserta nuevos y omite existentes", async () => {
+  const suffix = Date.now() + 154;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, suffix);
+  const userApiUrl = "https://shelly-import-1.shelly.cloud";
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const accessToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken,
+      accessTokenExpiresAt: new Date(exp * 1000),
+      status: "active",
+    },
+  });
+
+  await prisma.device.create({
+    data: {
+      userId: user.userId,
+      homeId: home.id,
+      vendor: "shelly",
+      displayName: "Already Imported",
+      externalDeviceId: "ext-existing",
+      status: "active",
+      dataSource: "shelly_cloud",
+    },
+  });
+
+  globalThis.fetch = (async () => {
+    return new Response(JSON.stringify({
+      "ext-existing": {
+        id: "ext-existing",
+        online: true,
+        _info: { ip: "192.168.1.20", mac: "AA:AA:AA:AA:AA:AA" },
+        code: "SHELLY-EXISTING",
+      },
+      "ext-online": {
+        id: "ext-online",
+        online: true,
+        _info: { ip: "192.168.1.21", mac: "BB:BB:BB:BB:BB:BB" },
+        code: "SHELLY-ONLINE",
+      },
+      "ext-offline": {
+        id: "ext-offline",
+        online: false,
+        _info: { ip: "192.168.1.22", mac: "CC:CC:CC:CC:CC:CC" },
+        code: "SHELLY-OFFLINE",
+      },
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-existing",
+          displayName: "Should Skip Existing",
+        },
+        {
+          externalDeviceId: "ext-online",
+          displayName: "Kitchen Plug",
+        },
+        {
+          externalDeviceId: "ext-offline",
+          displayName: "Garage Relay",
+          vendor: "shelly_pro",
+        },
+        {
+          externalDeviceId: "ext-missing",
+          displayName: "Not in cloud",
+        },
+        {
+          externalDeviceId: "ext-online",
+          displayName: "Duplicated request",
+        },
+      ],
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.import.summary.requested, 5);
+  assert.equal(response.body.import.summary.created, 2);
+  assert.equal(response.body.import.summary.skipped, 3);
+  assert.equal(response.body.import.summary.errors, 0);
+
+  const skippedReasons = response.body.import.skipped.map((item: { reason: string }) => item.reason);
+  assert.deepEqual(skippedReasons.sort(), ["ALREADY_IMPORTED", "DUPLICATED_IN_REQUEST", "NOT_FOUND_IN_SHELLY"]);
+
+  const createdByExternalId = new Map(
+    (response.body.import.created as ImportedDeviceResponse[]).map((device) => [device.externalDeviceId, device]),
+  );
+
+  const onlineCreated = createdByExternalId.get("ext-online");
+  assert.ok(onlineCreated);
+  assert.equal(onlineCreated.vendor, "shelly");
+  assert.equal(onlineCreated.displayName, "Kitchen Plug");
+  assert.equal(onlineCreated.deviceCode, "SHELLY-ONLINE");
+  assert.equal(onlineCreated.ipAddress, "192.168.1.21");
+  assert.equal(onlineCreated.macAddress, "BB:BB:BB:BB:BB:BB");
+  assert.equal(onlineCreated.status, "active");
+  assert.ok(onlineCreated.lastSeenAt);
+  assert.equal(onlineCreated.dataSource, "shelly_cloud");
+
+  const offlineCreated = createdByExternalId.get("ext-offline");
+  assert.ok(offlineCreated);
+  assert.equal(offlineCreated.vendor, "shelly_pro");
+  assert.equal(offlineCreated.displayName, "Garage Relay");
+  assert.equal(offlineCreated.deviceCode, "SHELLY-OFFLINE");
+  assert.equal(offlineCreated.ipAddress, "192.168.1.22");
+  assert.equal(offlineCreated.macAddress, "CC:CC:CC:CC:CC:CC");
+  assert.equal(offlineCreated.status, "disabled");
+  assert.equal(offlineCreated.lastSeenAt, null);
+  assert.equal(offlineCreated.dataSource, "shelly_cloud");
+
+  const devicesInDb = await prisma.device.findMany({
+    where: { userId: user.userId },
+    orderBy: { externalDeviceId: "asc" },
+    select: {
+      externalDeviceId: true,
+      status: true,
+      vendor: true,
+      dataSource: true,
+      homeId: true,
+    },
+  });
+
+  assert.equal(devicesInDb.length, 3);
+  assert.deepEqual(
+    devicesInDb.map((device) => device.externalDeviceId),
+    ["ext-existing", "ext-offline", "ext-online"],
+  );
+  const secondDevice = devicesInDb.at(1);
+  const thirdDevice = devicesInDb.at(2);
+  assert.ok(secondDevice);
+  assert.ok(thirdDevice);
+  assert.equal(secondDevice.status, "disabled");
+  assert.equal(thirdDevice.status, "active");
+  assert.ok(devicesInDb.every((device) => device.homeId === home.id));
+});
+
+test("POST /integrations/shelly/homes/:homeId/devices/import reintenta con refresh cuando Shelly invalida token", async () => {
+  const suffix = Date.now() + 159;
+  const user = await registerUser(`shelly-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, suffix);
+  const userApiUrl = "https://shelly-import-retry.shelly.cloud";
+  const oldExp = Math.floor(Date.now() / 1000) + 3600;
+  const oldAccessToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp: oldExp,
+  });
+  const refreshedExp = Math.floor(Date.now() / 1000) + 7200;
+  const refreshedToken = buildUnsignedJwt({
+    user_api_url: userApiUrl,
+    exp: refreshedExp,
+  });
+
+  await prisma.shellyIntegration.create({
+    data: {
+      userId: user.userId,
+      clientId: "shelly-diy",
+      userApiUrl,
+      authCode: "stored-auth-code",
+      accessToken: oldAccessToken,
+      accessTokenExpiresAt: new Date(oldExp * 1000),
+      status: "active",
+    },
+  });
+
+  let discoveryCalls = 0;
+  let exchangeCalls = 0;
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+
+    if (url.endsWith("/oauth/auth")) {
+      exchangeCalls += 1;
+      return new Response(JSON.stringify({ access_token: refreshedToken }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (url.includes("/device/all_status")) {
+      discoveryCalls += 1;
+      if (discoveryCalls === 1) {
+        return new Response(JSON.stringify({
+          isok: false,
+          error: "UNAUTHORIZED",
+          errors: {
+            invalid_token: "expired",
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        "ext-import-retry": {
+          id: "ext-import-retry",
+          code: "S4PL-RETRY",
+          _dev_info: {
+            online: true,
+          },
+          wifi: {
+            sta_ip: "192.168.2.88",
+          },
+          sys: {
+            mac: "58E6C50A5B38",
+          },
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ error: "unexpected_url" }), {
+      status: 500,
+    });
+  }) as typeof fetch;
+
+  const response = await request(app)
+    .post(`/integrations/shelly/homes/${home.id}/devices/import`)
+    .set("authorization", `Bearer ${user.token}`)
+    .send({
+      devices: [
+        {
+          externalDeviceId: "ext-import-retry",
+          displayName: "Retry Device",
+        },
+      ],
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.import.summary.created, 1);
+  assert.equal(discoveryCalls, 2);
+  assert.equal(exchangeCalls, 1);
+
+  const integration = await prisma.shellyIntegration.findUnique({
+    where: { userId: user.userId },
+  });
+  assert.ok(integration);
+  assert.equal(integration.accessToken, refreshedToken);
+  assert.equal(integration.status, "active");
 });
 
 test("GET /integrations/shelly devuelve estado detallado cuando existe integration activa", async () => {
