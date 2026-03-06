@@ -2,14 +2,19 @@ import type { Request, Response } from "express";
 import { getAuthUserIdOrThrow } from "../../common/auth/auth-context.js";
 import {
   completeShellyOAuth,
+  discoverShellyDevices,
   deleteShellyIntegration,
   getShellyIntegrationStatus,
+  importShellyDevicesToHome,
   refreshShellyAccessToken,
   startShellyOAuth,
 } from "./shelly.service.js";
-import type { ShellyCallbackQueryInput } from "./shelly.schemas.js";
+import type {
+  ShellyCallbackQueryInput,
+  ShellyImportDevicesBodyInput,
+} from "./shelly.schemas.js";
 
-const SHELLY_CONNECTED_HTML = "<!doctype html><html><body>Shelly conectado, ya puedes cerrar esta ventana</body></html>";
+import { SHELLY_CONNECTED_HTML } from "./shelly.templates.js";
 
 export async function startShellyOAuthHandler(req: Request, res: Response) {
   try {
@@ -24,14 +29,20 @@ export async function startShellyOAuthHandler(req: Request, res: Response) {
   }
 }
 
-export async function getShellyIntegrationStatusHandler(req: Request, res: Response) {
+export async function getShellyIntegrationStatusHandler(
+  req: Request,
+  res: Response,
+) {
   try {
-    const integration = await getShellyIntegrationStatus(getAuthUserIdOrThrow(req));
+    const integration = await getShellyIntegrationStatus(
+      getAuthUserIdOrThrow(req),
+    );
 
     return res.status(200).json({
       integration: {
         ...integration,
-        accessTokenExpiresAt: integration.accessTokenExpiresAt?.toISOString() ?? null,
+        accessTokenExpiresAt:
+          integration.accessTokenExpiresAt?.toISOString() ?? null,
         lastSyncAt: integration.lastSyncAt?.toISOString() ?? null,
       },
     });
@@ -44,6 +55,14 @@ export async function getShellyIntegrationStatusHandler(req: Request, res: Respo
   }
 }
 
+function getOwnedHomeId(req: Request): string {
+  if (!req.ownedHome?.id) {
+    throw new Error("INTERNAL_SERVER_ERROR");
+  }
+
+  return req.ownedHome.id;
+}
+
 export async function shellyCallbackHandler(req: Request, res: Response) {
   try {
     await completeShellyOAuth(req.query as ShellyCallbackQueryInput);
@@ -54,13 +73,11 @@ export async function shellyCallbackHandler(req: Request, res: Response) {
     }
 
     if (
-      error instanceof Error
-      && (
-        error.message === "INVALID_SHELLY_CODE"
-        || error.message === "SHELLY_TOKEN_EXCHANGE_FAILED"
-        || error.message === "INVALID_SHELLY_ACCESS_TOKEN"
-        || error.message === "SHELLY_HOST_MISMATCH"
-      )
+      error instanceof Error &&
+      (error.message === "INVALID_SHELLY_CODE" ||
+        error.message === "SHELLY_TOKEN_EXCHANGE_FAILED" ||
+        error.message === "INVALID_SHELLY_ACCESS_TOKEN" ||
+        error.message === "SHELLY_HOST_MISMATCH")
     ) {
       return res.status(502).json({ error: error.message });
     }
@@ -69,9 +86,92 @@ export async function shellyCallbackHandler(req: Request, res: Response) {
   }
 }
 
-export async function refreshShellyAccessTokenHandler(req: Request, res: Response) {
+export async function discoverShellyDevicesHandler(
+  req: Request,
+  res: Response,
+) {
   try {
-    const tokenContext = await refreshShellyAccessToken(getAuthUserIdOrThrow(req));
+    const discovery = await discoverShellyDevices(getAuthUserIdOrThrow(req));
+
+    return res.status(200).json({
+      discovery: {
+        ...discovery,
+        discoveredAt: discovery.discoveredAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "UNAUTHORIZED") {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+
+    if (
+      error instanceof Error &&
+      error.message === "SHELLY_INTEGRATION_NOT_FOUND"
+    ) {
+      return res.status(404).json({ error: "SHELLY_INTEGRATION_NOT_FOUND" });
+    }
+
+    if (
+      error instanceof Error &&
+      (error.message === "SHELLY_DISCOVERY_FAILED" ||
+        error.message === "SHELLY_TOKEN_EXCHANGE_FAILED" ||
+        error.message === "INVALID_SHELLY_ACCESS_TOKEN" ||
+        error.message === "SHELLY_HOST_MISMATCH")
+    ) {
+      return res.status(502).json({ error: error.message });
+    }
+
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+}
+
+export async function importShellyDevicesHandler(req: Request, res: Response) {
+  try {
+    const imported = await importShellyDevicesToHome(
+      getAuthUserIdOrThrow(req),
+      getOwnedHomeId(req),
+      req.body as ShellyImportDevicesBodyInput,
+    );
+
+    return res.status(200).json({ import: imported });
+  } catch (error) {
+    if (error instanceof Error && error.message === "UNAUTHORIZED") {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+
+    if (error instanceof Error && error.message === "HOME_NOT_FOUND") {
+      return res.status(404).json({ error: "HOME_NOT_FOUND" });
+    }
+
+    if (
+      error instanceof Error &&
+      error.message === "SHELLY_INTEGRATION_NOT_FOUND"
+    ) {
+      return res.status(404).json({ error: "SHELLY_INTEGRATION_NOT_FOUND" });
+    }
+
+    if (
+      error instanceof Error &&
+      (error.message === "SHELLY_DISCOVERY_FAILED" ||
+        error.message === "SHELLY_TOKEN_EXCHANGE_FAILED" ||
+        error.message === "INVALID_SHELLY_ACCESS_TOKEN" ||
+        error.message === "SHELLY_HOST_MISMATCH")
+    ) {
+      return res.status(502).json({ error: error.message });
+    }
+
+    return res.status(500).json({ error: "INTERNAL_SERVER_ERROR" });
+  }
+}
+
+export async function refreshShellyAccessTokenHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const tokenContext = await refreshShellyAccessToken(
+      getAuthUserIdOrThrow(req),
+    );
     return res.status(200).json({
       ok: true,
       status: "active",
@@ -83,17 +183,18 @@ export async function refreshShellyAccessTokenHandler(req: Request, res: Respons
       return res.status(401).json({ error: "UNAUTHORIZED" });
     }
 
-    if (error instanceof Error && error.message === "SHELLY_INTEGRATION_NOT_FOUND") {
+    if (
+      error instanceof Error &&
+      error.message === "SHELLY_INTEGRATION_NOT_FOUND"
+    ) {
       return res.status(404).json({ error: "SHELLY_INTEGRATION_NOT_FOUND" });
     }
 
     if (
-      error instanceof Error
-      && (
-        error.message === "SHELLY_TOKEN_EXCHANGE_FAILED"
-        || error.message === "INVALID_SHELLY_ACCESS_TOKEN"
-        || error.message === "SHELLY_HOST_MISMATCH"
-      )
+      error instanceof Error &&
+      (error.message === "SHELLY_TOKEN_EXCHANGE_FAILED" ||
+        error.message === "INVALID_SHELLY_ACCESS_TOKEN" ||
+        error.message === "SHELLY_HOST_MISMATCH")
     ) {
       return res.status(502).json({ error: error.message });
     }
@@ -102,7 +203,10 @@ export async function refreshShellyAccessTokenHandler(req: Request, res: Respons
   }
 }
 
-export async function deleteShellyIntegrationHandler(req: Request, res: Response) {
+export async function deleteShellyIntegrationHandler(
+  req: Request,
+  res: Response,
+) {
   try {
     await deleteShellyIntegration(getAuthUserIdOrThrow(req));
     return res.status(204).send();

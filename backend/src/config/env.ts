@@ -13,6 +13,10 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default("1h"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
   SHELLY_OAUTH_REDIRECT_URI: z.string().url("SHELLY_OAUTH_REDIRECT_URI must be a valid URL"),
+  SHELLY_POLLING_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
+  SHELLY_POLLING_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  SHELLY_POLLING_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+  SHELLY_POLLING_MAX_CONCURRENCY: z.coerce.number().int().positive().default(3),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -25,4 +29,11 @@ if (!parsed.success) {
   throw new Error("Invalid environment configuration");
 }
 
-export const env = parsed.data;
+const pollingEnabled = parsed.data.SHELLY_POLLING_ENABLED
+  ? ["true", "1"].includes(parsed.data.SHELLY_POLLING_ENABLED)
+  : parsed.data.NODE_ENV !== "test";
+
+export const env = {
+  ...parsed.data,
+  SHELLY_POLLING_ENABLED: pollingEnabled,
+};

@@ -131,7 +131,7 @@ model Device {
   baselines   DeviceBaseline[]
   anomalies   AnomalyEvent[]
 
-  @@unique([userId, vendor, externalDeviceId], map: "devices_user_vendor_external_unique")
+  @@unique([userId, externalDeviceId], map: "devices_user_external_unique")
   @@index([homeId])
   @@index([userId])
   @@map("devices")
@@ -142,20 +142,25 @@ model DeviceReading {
   deviceId String   @map("device_id") @db.Uuid
   ts       DateTime @db.Timestamptz(6)
 
-  powerW   Decimal? @map("power_w") @db.Decimal(12, 4)
-  voltageV Decimal? @map("voltage_v") @db.Decimal(12, 4)
-  currentA Decimal? @map("current_a") @db.Decimal(12, 4)
-  pf       Decimal? @db.Decimal(8, 4)
-  relayOn  Boolean? @map("relay_on")
+  apower  Decimal? @db.Decimal(12, 4)
+  voltage Decimal? @db.Decimal(12, 4)
+  current Decimal? @db.Decimal(12, 4)
+  freq    Decimal? @db.Decimal(8, 4)
+  output  Boolean?
 
-  energyWh      Decimal? @map("energy_wh") @db.Decimal(12, 4)
-  energyDeltaWh Decimal? @map("energy_delta_wh") @db.Decimal(12, 4)
+  aenergyTotal    Decimal? @map("aenergy_total") @db.Decimal(12, 4)
+  aenergyDelta    Decimal? @map("aenergy_delta") @db.Decimal(12, 4)
+  aenergyMinuteTs BigInt?  @map("aenergy_minute_ts")
+  aenergyByMinute Json?    @map("aenergy_by_minute") @db.JsonB
 
-  energyMinuteTs   BigInt? @map("energy_minute_ts")
-  energyByMinuteWh Json?   @map("energy_by_minute_wh") @db.JsonB
+  retAenergyTotal    Decimal? @map("ret_aenergy_total") @db.Decimal(12, 4)
+  retAenergyMinuteTs BigInt?  @map("ret_aenergy_minute_ts")
+  retAenergyByMinute Json?    @map("ret_aenergy_by_minute") @db.JsonB
 
-  source     String @default("shelly_cloud")
-  rawPayload Json?  @map("raw_payload") @db.JsonB
+  temperatureTc Decimal? @map("temperature_tc") @db.Decimal(8, 4)
+  temperatureTf Decimal? @map("temperature_tf") @db.Decimal(8, 4)
+
+  source String @default("shelly_cloud")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
