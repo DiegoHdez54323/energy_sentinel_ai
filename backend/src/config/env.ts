@@ -9,6 +9,7 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  CORS_ORIGIN: z.string().optional(),
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 chars"),
   JWT_EXPIRES_IN: z.string().default("1h"),
   JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
@@ -42,9 +43,20 @@ const pollingDebugDumps = parsed.data.SHELLY_POLLING_DEBUG_DUMPS
 const aggregatesEnabled = parsed.data.AGGREGATES_ENABLED
   ? ["true", "1"].includes(parsed.data.AGGREGATES_ENABLED)
   : parsed.data.NODE_ENV !== "test";
+const corsAllowedOrigins = parsed.data.CORS_ORIGIN
+  ? parsed.data.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
+  : [];
+
+if (parsed.data.NODE_ENV === "production" && corsAllowedOrigins.length === 0) {
+  console.error("Invalid environment variables", {
+    CORS_ORIGIN: ["CORS_ORIGIN is required in production"],
+  });
+  throw new Error("Invalid environment configuration");
+}
 
 export const env = {
   ...parsed.data,
+  CORS_ALLOWED_ORIGINS: corsAllowedOrigins,
   SHELLY_POLLING_ENABLED: pollingEnabled,
   SHELLY_POLLING_DEBUG_DUMPS: pollingDebugDumps,
   AGGREGATES_ENABLED: aggregatesEnabled,

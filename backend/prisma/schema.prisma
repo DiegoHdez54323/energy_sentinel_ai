@@ -287,3 +287,14 @@ model NotificationLog {
   @@index([anomalyEventId])
   @@map("notification_logs")
 }
+
+model JobLock {
+  key       String   @id
+  ownerId   String   @map("owner_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("job_locks")
+}
