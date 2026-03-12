@@ -1,16 +1,14 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
+  
 }
 
 model User {
@@ -21,24 +19,43 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  homes         Home[]
+  homes             Home[]
+  devices           Device[]
+  shellyIntegration ShellyIntegration?
+
   pushTokens    UserPushToken[]
   notifications NotificationLog[]
+  refreshTokens RefreshToken[]
+  shellyOauthStates ShellyOAuthState[]
 
   @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model Home {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   name      String
-  timezone  String?
+  timezone  String
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shellyIntegration ShellyIntegration?
-  devices           Device[]
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  devices Device[]
 
   @@index([userId])
   @@map("homes")
@@ -46,7 +63,7 @@ model Home {
 
 model ShellyIntegration {
   id     String @id @default(uuid()) @db.Uuid
-  homeId String @unique @map("home_id") @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
 
   clientId   String @default("shelly-diy") @map("client_id")
   userApiUrl String @map("user_api_url")
@@ -54,7 +71,6 @@ model ShellyIntegration {
   authCode String? @map("auth_code")
 
   accessToken          String?   @map("access_token")
-  refreshToken         String?   @map("refresh_token")
   accessTokenExpiresAt DateTime? @map("access_token_expires_at") @db.Timestamptz(6)
 
   status     String    @default("active")
@@ -63,41 +79,61 @@ model ShellyIntegration {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("shelly_integrations")
 }
 
+model ShellyOAuthState {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  state      String   @unique
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("shelly_oauth_states")
+}
+
 model Device {
-  id          String  @id @default(uuid()) @db.Uuid
-  homeId      String  @map("home_id") @db.Uuid
+  id String @id @default(uuid()) @db.Uuid
+
+  homeId String @map("home_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
   vendor      String
-  model       String?
+  deviceCode  String? @map("device_code")
   displayName String  @map("display_name")
 
   ipAddress  String? @map("ip_address") @db.Inet
   macAddress String? @map("mac_address")
 
-  externalDeviceId String? @map("external_device_id")
+  externalDeviceId String @map("external_device_id")
 
   status     String    @default("active")
   lastSeenAt DateTime? @map("last_seen_at") @db.Timestamptz(6)
 
-  dataSource      String @default("shelly_cloud") @map("data_source")
-  telemetryConfig Json?  @map("telemetry_config") @db.JsonB
+  dataSource String @default("shelly_cloud") @map("data_source")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  home        Home                @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  home Home @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   readings    DeviceReading[]
   hourlyUsage DeviceUsageHourly[]
   dailyUsage  DeviceUsageDaily[]
   baselines   DeviceBaseline[]
   anomalies   AnomalyEvent[]
 
-  @@unique([homeId, vendor, externalDeviceId], map: "devices_home_vendor_external_unique")
+  @@unique([userId, externalDeviceId], map: "devices_user_external_unique")
   @@index([homeId])
+  @@index([userId])
   @@map("devices")
 }
 
@@ -106,23 +142,29 @@ model DeviceReading {
   deviceId String   @map("device_id") @db.Uuid
   ts       DateTime @db.Timestamptz(6)
 
-  powerW   Decimal? @map("power_w") @db.Decimal(12, 4)
-  voltageV Decimal? @map("voltage_v") @db.Decimal(12, 4)
-  currentA Decimal? @map("current_a") @db.Decimal(12, 4)
-  pf       Decimal? @db.Decimal(8, 4)
-  relayOn  Boolean? @map("relay_on")
+  apower  Decimal? @db.Decimal(12, 4)
+  voltage Decimal? @db.Decimal(12, 4)
+  current Decimal? @db.Decimal(12, 4)
+  freq    Decimal? @db.Decimal(8, 4)
+  output  Boolean?
 
-  energyWh      Decimal? @map("energy_wh") @db.Decimal(12, 4)
-  energyDeltaWh Decimal? @map("energy_delta_wh") @db.Decimal(12, 4)
+  aenergyTotal    Decimal? @map("aenergy_total") @db.Decimal(12, 4)
+  aenergyDelta    Decimal? @map("aenergy_delta") @db.Decimal(12, 4)
+  aenergyMinuteTs BigInt?  @map("aenergy_minute_ts")
+  aenergyByMinute Json?    @map("aenergy_by_minute") @db.JsonB
 
-  energyMinuteTs   BigInt? @map("energy_minute_ts")
-  energyByMinuteWh Json?   @map("energy_by_minute_wh") @db.JsonB
+  retAenergyTotal    Decimal? @map("ret_aenergy_total") @db.Decimal(12, 4)
+  retAenergyMinuteTs BigInt?  @map("ret_aenergy_minute_ts")
+  retAenergyByMinute Json?    @map("ret_aenergy_by_minute") @db.JsonB
 
-  source     String @default("shelly_cloud")
-  rawPayload Json?  @map("raw_payload") @db.JsonB
+  temperatureTc Decimal? @map("temperature_tc") @db.Decimal(8, 4)
+  temperatureTf Decimal? @map("temperature_tf") @db.Decimal(8, 4)
+
+  source String @default("shelly_cloud")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
+  @@unique([deviceId, ts], map: "device_readings_device_ts_unique")
   @@index([deviceId, ts])
   @@map("device_readings")
 }
@@ -135,6 +177,7 @@ model DeviceUsageHourly {
   energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
   avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
   maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  minPowerW    Decimal? @map("min_power_w") @db.Decimal(12, 4)
   samplesCount Int      @map("samples_count")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
@@ -152,6 +195,7 @@ model DeviceUsageDaily {
   energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
   avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
   maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  minPowerW    Decimal? @map("min_power_w") @db.Decimal(12, 4)
   samplesCount Int      @map("samples_count")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
@@ -172,17 +216,22 @@ model DeviceBaseline {
 
   trainedFrom DateTime @map("trained_from") @db.Timestamptz(6)
   trainedTo   DateTime @map("trained_to") @db.Timestamptz(6)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  anomalyEvents AnomalyEvent[]
 
   @@index([deviceId])
+  @@index([deviceId, isActive])
   @@map("device_baselines")
 }
 
 model AnomalyEvent {
-  id       String @id @default(uuid()) @db.Uuid
-  deviceId String @map("device_id") @db.Uuid
+  id         String  @id @default(uuid()) @db.Uuid
+  deviceId   String  @map("device_id") @db.Uuid
+  baselineId String? @map("baseline_id") @db.Uuid
 
   detectedAt  DateTime @map("detected_at") @db.Timestamptz(6)
   windowStart DateTime @map("window_start") @db.Timestamptz(6)
@@ -198,8 +247,10 @@ model AnomalyEvent {
   details Json? @db.JsonB
 
   device        Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  baseline      DeviceBaseline?   @relation(fields: [baselineId], references: [id], onDelete: SetNull)
   notifications NotificationLog[]
 
+  @@unique([deviceId, anomalyType, windowStart, windowEnd], map: "anomaly_events_device_type_window_unique")
   @@index([deviceId, detectedAt])
   @@map("anomaly_events")
 }
@@ -235,4 +286,15 @@ model NotificationLog {
   @@index([userId, sentAt])
   @@index([anomalyEventId])
   @@map("notification_logs")
+}
+
+model JobLock {
+  key       String   @id
+  ownerId   String   @map("owner_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("job_locks")
 }

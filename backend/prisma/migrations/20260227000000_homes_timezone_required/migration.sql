@@ -1,0 +1,2 @@
+ALTER TABLE "homes"
+ALTER COLUMN "timezone" SET NOT NULL;
