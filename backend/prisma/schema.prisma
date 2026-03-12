@@ -177,6 +177,7 @@ model DeviceUsageHourly {
   energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
   avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
   maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  minPowerW    Decimal? @map("min_power_w") @db.Decimal(12, 4)
   samplesCount Int      @map("samples_count")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
@@ -194,6 +195,7 @@ model DeviceUsageDaily {
   energyWh     Decimal  @map("energy_wh") @db.Decimal(14, 4)
   avgPowerW    Decimal? @map("avg_power_w") @db.Decimal(12, 4)
   maxPowerW    Decimal? @map("max_power_w") @db.Decimal(12, 4)
+  minPowerW    Decimal? @map("min_power_w") @db.Decimal(12, 4)
   samplesCount Int      @map("samples_count")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)

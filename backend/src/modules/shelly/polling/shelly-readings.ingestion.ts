@@ -1,6 +1,7 @@
 import { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../../lib/prisma.js";
 import { fetchShellyAllStatusWithRetry } from "../shared/shelly-all-status.js";
+import type { ShellyPollingDebugRun } from "./shelly-polling-debug.js";
 import {
   extractShellyRawDeviceEntries,
   getExternalDeviceIdFromRawEntry,
@@ -95,80 +96,102 @@ async function insertDeviceReading(
   return inserted > 0 ? "inserted" : "duplicate";
 }
 
-export async function pollShellyIntegrationReadings(userId: string): Promise<{
+export async function pollShellyIntegrationReadings(
+  userId: string,
+  debugRun?: ShellyPollingDebugRun,
+): Promise<{
   readingsInserted: number;
   readingsDuplicated: number;
   readingsSkipped: number;
 }> {
-  const payload = await fetchShellyAllStatusWithRetry(userId);
-  const rawEntries = extractShellyRawDeviceEntries(payload);
-
-  const readingsByExternalId = new Map<string, ShellySwitch0Reading>();
-  for (const entry of rawEntries) {
-    const externalDeviceId = getExternalDeviceIdFromRawEntry(entry);
-    if (!externalDeviceId || readingsByExternalId.has(externalDeviceId)) {
-      continue;
-    }
-
-    const reading = normalizeSwitch0Reading(entry.raw);
-    if (!reading) {
-      continue;
-    }
-
-    readingsByExternalId.set(externalDeviceId, reading);
-  }
-
-  const externalIds = [...readingsByExternalId.keys()];
-  if (externalIds.length === 0) {
-    await setShellyIntegrationLastSync(userId, new Date());
-    return {
-      readingsInserted: 0,
-      readingsDuplicated: 0,
-      readingsSkipped: 0,
-    };
-  }
-
-  const devices = await prisma.device.findMany({
-    where: {
-      userId,
-      externalDeviceId: {
-        in: externalIds,
-      },
-    },
-    select: {
-      id: true,
-      externalDeviceId: true,
-    },
-  });
-
-  let readingsInserted = 0;
-  let readingsDuplicated = 0;
-  let readingsSkipped = 0;
-
-  for (const device of devices) {
-    const reading = readingsByExternalId.get(device.externalDeviceId);
-    if (!reading) {
-      readingsSkipped += 1;
-      continue;
-    }
-
-    const insertResult = await insertDeviceReading(device.id, reading);
-    if (insertResult === "inserted") {
-      readingsInserted += 1;
-    } else {
-      readingsDuplicated += 1;
-    }
-  }
-
-  if (devices.length < readingsByExternalId.size) {
-    readingsSkipped += readingsByExternalId.size - devices.length;
-  }
-
-  await setShellyIntegrationLastSync(userId, new Date());
-
-  return {
-    readingsInserted,
-    readingsDuplicated,
-    readingsSkipped,
+  const startedAt = new Date();
+  let payload: unknown = null;
+  let rawEntriesCount = 0;
+  let externalIds: string[] = [];
+  let devices: Array<{ id: string; externalDeviceId: string }> = [];
+  let error: unknown;
+  let result = {
+    readingsInserted: 0,
+    readingsDuplicated: 0,
+    readingsSkipped: 0,
   };
+
+  try {
+    payload = await fetchShellyAllStatusWithRetry(userId);
+    const rawEntries = extractShellyRawDeviceEntries(payload);
+    rawEntriesCount = rawEntries.length;
+
+    const readingsByExternalId = new Map<string, ShellySwitch0Reading>();
+    for (const entry of rawEntries) {
+      const externalDeviceId = getExternalDeviceIdFromRawEntry(entry);
+      if (!externalDeviceId || readingsByExternalId.has(externalDeviceId)) {
+        continue;
+      }
+
+      const reading = normalizeSwitch0Reading(entry.raw);
+      if (!reading) {
+        continue;
+      }
+
+      readingsByExternalId.set(externalDeviceId, reading);
+    }
+
+    externalIds = [...readingsByExternalId.keys()];
+    if (externalIds.length === 0) {
+      await setShellyIntegrationLastSync(userId, new Date());
+      return result;
+    }
+
+    devices = await prisma.device.findMany({
+      where: {
+        userId,
+        externalDeviceId: {
+          in: externalIds,
+        },
+      },
+      select: {
+        id: true,
+        externalDeviceId: true,
+      },
+    });
+
+    for (const device of devices) {
+      const reading = readingsByExternalId.get(device.externalDeviceId);
+      if (!reading) {
+        result.readingsSkipped += 1;
+        continue;
+      }
+
+      const insertResult = await insertDeviceReading(device.id, reading);
+      if (insertResult === "inserted") {
+        result.readingsInserted += 1;
+      } else {
+        result.readingsDuplicated += 1;
+      }
+    }
+
+    if (devices.length < readingsByExternalId.size) {
+      result.readingsSkipped += readingsByExternalId.size - devices.length;
+    }
+
+    await setShellyIntegrationLastSync(userId, new Date());
+
+    return result;
+  } catch (caughtError) {
+    error = caughtError;
+    throw caughtError;
+  } finally {
+    await debugRun?.writeIntegrationDump({
+      userId,
+      startedAt,
+      finishedAt: new Date(),
+      status: error ? "error" : "success",
+      payload,
+      rawEntriesCount,
+      externalIds,
+      devices,
+      result,
+      error,
+    });
+  }
 }
