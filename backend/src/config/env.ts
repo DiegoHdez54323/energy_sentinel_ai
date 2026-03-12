@@ -17,6 +17,10 @@ const envSchema = z.object({
   SHELLY_POLLING_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   SHELLY_POLLING_BATCH_SIZE: z.coerce.number().int().positive().default(100),
   SHELLY_POLLING_MAX_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  SHELLY_POLLING_DEBUG_DUMPS: z.enum(["true", "false", "1", "0"]).optional(),
+  AGGREGATES_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
+  AGGREGATES_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  AGGREGATES_DEVICE_BATCH_SIZE: z.coerce.number().int().positive().default(100),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -32,8 +36,16 @@ if (!parsed.success) {
 const pollingEnabled = parsed.data.SHELLY_POLLING_ENABLED
   ? ["true", "1"].includes(parsed.data.SHELLY_POLLING_ENABLED)
   : parsed.data.NODE_ENV !== "test";
+const pollingDebugDumps = parsed.data.SHELLY_POLLING_DEBUG_DUMPS
+  ? ["true", "1"].includes(parsed.data.SHELLY_POLLING_DEBUG_DUMPS)
+  : false;
+const aggregatesEnabled = parsed.data.AGGREGATES_ENABLED
+  ? ["true", "1"].includes(parsed.data.AGGREGATES_ENABLED)
+  : parsed.data.NODE_ENV !== "test";
 
 export const env = {
   ...parsed.data,
   SHELLY_POLLING_ENABLED: pollingEnabled,
+  SHELLY_POLLING_DEBUG_DUMPS: pollingDebugDumps,
+  AGGREGATES_ENABLED: aggregatesEnabled,
 };
