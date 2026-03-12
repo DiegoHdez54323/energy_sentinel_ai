@@ -87,6 +87,11 @@ backend/src/
       devices.routes.ts
       devices.schemas.ts
       devices.service.ts
+    aggregates/
+      aggregates.service.ts
+      usage-aggregation.repository.ts
+      usage-aggregation.service.ts
+      usage-aggregation.types.ts
     shelly/
       shelly.controller.ts
       shelly.routes.ts
@@ -240,6 +245,25 @@ Responsabilidades:
 - decodificar JWT Shelly sin verificar firma
 - normalizar payloads discovery y readings
 - encapsular helpers repetidos de Prisma sobre la integración Shelly
+
+### 5.5 `aggregates`
+
+Responsabilidades:
+
+- arrancar un scheduler in-process independiente del polling Shelly
+- recorrer devices que ya tienen `device_readings`
+- materializar `device_usage_hourly`
+- materializar `device_usage_daily`
+- calcular agregados diarios usando `home.timezone`
+
+Reglas actuales:
+
+- el job corre al boot y luego cada `AGGREGATES_INTERVAL_MS`
+- solo materializa buckets cerrados
+- `hourly` se calcula por hora UTC cerrada
+- `daily` se calcula por día local cerrado del `home.timezone`
+- `daily` se calcula directo desde `device_readings`, no desde `hourly`
+- si falla un device, la corrida sigue con los demás
 
 ## 6. App entrypoint y middleware global
 
@@ -1234,10 +1258,23 @@ Protecciones del scheduler:
 - `SHELLY_POLLING_INTERVAL_MS`
 - `SHELLY_POLLING_BATCH_SIZE`
 - `SHELLY_POLLING_MAX_CONCURRENCY`
+- `SHELLY_POLLING_DEBUG_DUMPS`
 
 Comportamiento actual:
 
 - si `SHELLY_POLLING_ENABLED` no existe, el polling queda activo excepto en `NODE_ENV=test`
+
+### Aggregates
+
+- `AGGREGATES_ENABLED`
+- `AGGREGATES_INTERVAL_MS`
+- `AGGREGATES_DEVICE_BATCH_SIZE`
+
+Comportamiento actual:
+
+- el valor recomendado de `AGGREGATES_INTERVAL_MS` es 1 hora
+- el scheduler corre una vez al boot y luego por intervalo
+- las tablas agregadas no incluyen la hora UTC actual ni el día local actual
 
 ## 14. Modelo de datos actual
 
@@ -1306,8 +1343,15 @@ Comportamiento actual:
 
 #### `device_usage_hourly` y `device_usage_daily`
 
-- tablas preparadas para agregados
-- aún no documentadas como flujo activo productivo en este backend
+- tablas de agregados activas como job backend
+- `device_usage_hourly` resume `device_readings` por hora UTC cerrada
+- `device_usage_daily` resume `device_readings` por día local cerrado según `home.timezone`
+- métricas actuales:
+  - `energyWh = SUM(aenergy_delta)`
+  - `avgPowerW = AVG(apower)`
+  - `maxPowerW = MAX(apower)`
+  - `minPowerW = MIN(apower)`
+  - `samplesCount = COUNT(*)`
 
 #### `device_baselines` y `anomaly_events`
 
@@ -1329,10 +1373,10 @@ Comportamiento actual:
 - refresh manual de token Shelly
 - borrado de integración Shelly
 - polling Shelly para `device_readings`
+- job de agregación horaria y diaria para `device_usage_hourly` y `device_usage_daily`
 
 ### No implementado completamente todavía
 
-- agregación horaria y diaria como job activo
 - entrenamiento de baselines
 - detección de anomalías
 - envío de notificaciones push
