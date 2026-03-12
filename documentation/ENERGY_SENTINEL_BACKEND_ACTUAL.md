@@ -67,7 +67,11 @@ backend/src/
       validate.ts
   config/
     env.ts
+  jobs/
+    job-aggregates.ts
+    job-shelly-polling.ts
   lib/
+    job-lock.ts
     prisma.ts
   modules/
     auth/
@@ -113,6 +117,7 @@ backend/src/
         shelly-parsers.ts
         shelly.constants.ts
         shelly.types.ts
+  server.dev.ts
   server.ts
 ```
 
@@ -224,17 +229,33 @@ Reglas actuales:
 
 Responsabilidades:
 
-- arrancar el scheduler in-process al boot del backend
-- correr inmediatamente una vez y luego cada `SHELLY_POLLING_INTERVAL_MS`
+- exponer una corrida one-shot reusable
+- soportar scheduler in-process para desarrollo local
 - paginar integraciones activas
 - procesar varias integraciones con límite de concurrencia
 - ingerir lecturas por device desde `switch:0`
 
 Reglas actuales:
 
-- si el polling está deshabilitado por ENV, no arranca
-- el scheduler evita corridas superpuestas con un guard en memoria
-- el job se detiene al recibir `SIGINT` o `SIGTERM`
+- en producción se ejecuta como job batch separado del servidor HTTP
+- en desarrollo local puede correr con scheduler in-process
+- el scheduler local evita corridas superpuestas con un guard en memoria
+
+#### `jobs`
+
+Responsabilidades:
+
+- ejecutar polling Shelly una sola vez por proceso
+- ejecutar aggregates una sola vez por proceso
+- cerrar Prisma al terminar
+- proteger corridas con lock distribuido en DB
+
+Reglas actuales:
+
+- `job-shelly-polling.ts` corre `runShellyReadingsPollingOnce()`
+- `job-aggregates.ts` corre `runDeviceUsageAggregationOnce()`
+- ambos jobs intentan tomar lock en `job_locks`
+- si el lock ya está tomado, el proceso sale como `skipped`
 
 #### `shelly/shared`
 
@@ -250,7 +271,8 @@ Responsabilidades:
 
 Responsabilidades:
 
-- arrancar un scheduler in-process independiente del polling Shelly
+- exponer una corrida one-shot reusable
+- soportar scheduler in-process para desarrollo local
 - recorrer devices que ya tienen `device_readings`
 - materializar `device_usage_hourly`
 - materializar `device_usage_daily`
@@ -258,7 +280,8 @@ Responsabilidades:
 
 Reglas actuales:
 
-- el job corre al boot y luego cada `AGGREGATES_INTERVAL_MS`
+- en producción se ejecuta como job batch separado del servidor HTTP
+- en desarrollo local puede correr al boot y luego por `setInterval`
 - solo materializa buckets cerrados
 - `hourly` se calcula por hora UTC cerrada
 - `daily` se calcula por día local cerrado del `home.timezone`
@@ -1195,11 +1218,10 @@ Mapeo actual al crear `devices`:
 
 Resumen:
 
-1. `server.ts` arranca `startShellyReadingsPolling()`
-2. si el polling está habilitado, corre una vez inmediatamente
-3. luego programa `setInterval`
-4. cada corrida pagina integraciones activas
-5. para cada integración:
+1. en producción, `job-shelly-polling.ts` ejecuta `runShellyReadingsPollingOnce()`
+2. en desarrollo local, `server.dev.ts` puede arrancar `startShellyReadingsPolling()`
+3. cada corrida pagina integraciones activas
+4. para cada integración:
    - obtiene access token válido
    - si hace falta, refresh
    - llama `all_status`
@@ -1232,10 +1254,10 @@ Regla de `aenergyDelta`:
 - solo si ambos existen y el valor actual no es menor al previo
 - si no, se guarda `null`
 
-Protecciones del scheduler:
+Protecciones actuales:
 
-- guard in-memory para no solapar corridas
-- stop limpio al recibir `SIGINT` o `SIGTERM`
+- el scheduler local usa guard in-memory para no solapar corridas
+- los jobs batch usan `job_locks` para evitar solapes entre procesos
 
 ## 13. Variables de entorno relevantes
 
@@ -1244,6 +1266,7 @@ Protecciones del scheduler:
 - `NODE_ENV`
 - `PORT`
 - `DATABASE_URL`
+- `CORS_ORIGIN`
 
 ### Auth
 
@@ -1263,6 +1286,7 @@ Protecciones del scheduler:
 Comportamiento actual:
 
 - si `SHELLY_POLLING_ENABLED` no existe, el polling queda activo excepto en `NODE_ENV=test`
+- `SHELLY_POLLING_INTERVAL_MS` solo importa para el scheduler local
 
 ### Aggregates
 
@@ -1272,8 +1296,8 @@ Comportamiento actual:
 
 Comportamiento actual:
 
-- el valor recomendado de `AGGREGATES_INTERVAL_MS` es 1 hora
-- el scheduler corre una vez al boot y luego por intervalo
+- el valor recomendado de `AGGREGATES_INTERVAL_MS` es 1 hora para desarrollo local
+- en producción la frecuencia la define el scheduler externo del job
 - las tablas agregadas no incluyen la hora UTC actual ni el día local actual
 
 ## 14. Modelo de datos actual
@@ -1287,6 +1311,7 @@ Comportamiento actual:
 - `shelly_oauth_states`
 - `devices`
 - `device_readings`
+- `job_locks`
 
 ### Ya modelado en Prisma, pero no completamente expuesto por endpoints/jobs aún
 
@@ -1353,6 +1378,12 @@ Comportamiento actual:
   - `minPowerW = MIN(apower)`
   - `samplesCount = COUNT(*)`
 
+#### `job_locks`
+
+- lock distribuido para jobs batch
+- evita que polling o aggregates se ejecuten en paralelo en procesos distintos
+- usa lease temporal con `expires_at`
+
 #### `device_baselines` y `anomaly_events`
 
 - tablas preparadas para fase de detección de anomalías
@@ -1374,6 +1405,8 @@ Comportamiento actual:
 - borrado de integración Shelly
 - polling Shelly para `device_readings`
 - job de agregación horaria y diaria para `device_usage_hourly` y `device_usage_daily`
+- separación entre servidor HTTP y jobs batch
+- jobs one-shot para polling y aggregates
 
 ### No implementado completamente todavía
 
