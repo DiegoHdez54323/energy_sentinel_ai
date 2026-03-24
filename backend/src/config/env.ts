@@ -22,6 +22,9 @@ const envSchema = z.object({
   AGGREGATES_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
   AGGREGATES_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
   AGGREGATES_DEVICE_BATCH_SIZE: z.coerce.number().int().positive().default(100),
+  BASELINE_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
+  BASELINE_WINDOW_DAYS: z.coerce.number().int().positive().default(14),
+  BASELINE_MIN_BUCKET_SAMPLES: z.coerce.number().int().positive().default(2),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -43,6 +46,9 @@ const pollingDebugDumps = parsed.data.SHELLY_POLLING_DEBUG_DUMPS
 const aggregatesEnabled = parsed.data.AGGREGATES_ENABLED
   ? ["true", "1"].includes(parsed.data.AGGREGATES_ENABLED)
   : parsed.data.NODE_ENV !== "test";
+const baselineEnabled = parsed.data.BASELINE_ENABLED
+  ? ["true", "1"].includes(parsed.data.BASELINE_ENABLED)
+  : parsed.data.NODE_ENV !== "test";
 const corsAllowedOrigins = parsed.data.CORS_ORIGIN
   ? parsed.data.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
   : [];
@@ -60,4 +66,5 @@ export const env = {
   SHELLY_POLLING_ENABLED: pollingEnabled,
   SHELLY_POLLING_DEBUG_DUMPS: pollingDebugDumps,
   AGGREGATES_ENABLED: aggregatesEnabled,
+  BASELINE_ENABLED: baselineEnabled,
 };

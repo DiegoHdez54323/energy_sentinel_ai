@@ -11,6 +11,9 @@ console.log(
 console.log(
   `[UsageAggregates] enabled=${env.AGGREGATES_ENABLED} intervalMs=${env.AGGREGATES_INTERVAL_MS} deviceBatchSize=${env.AGGREGATES_DEVICE_BATCH_SIZE}`,
 );
+console.log(
+  `[DeviceBaseline] enabled=${env.BASELINE_ENABLED} windowDays=${env.BASELINE_WINDOW_DAYS} minBucketSamples=${env.BASELINE_MIN_BUCKET_SAMPLES}`,
+);
 
 const polling = startShellyReadingsPolling();
 const aggregates = startDeviceUsageAggregation();
@@ -18,6 +21,7 @@ const server = app.listen(env.PORT, () => {
   console.log(`Server is running on port ${env.PORT}`);
   console.log(`[ShellyPolling] ${env.SHELLY_POLLING_ENABLED ? "started" : "disabled"}`);
   console.log(`[UsageAggregates] ${env.AGGREGATES_ENABLED ? "started" : "disabled"}`);
+  console.log(`[DeviceBaseline] ${env.BASELINE_ENABLED ? "started via aggregates" : "disabled"}`);
 });
 
 async function shutdown(signal: "SIGINT" | "SIGTERM") {
