@@ -3,4 +3,9 @@ export type DeviceUsageAggregationStats = {
   devicesFailed: number;
   hourlyRowsUpserted: number;
   dailyRowsUpserted: number;
+  baselineDevicesEvaluated: number;
+  baselineDevicesActivated: number;
+  baselineDevicesSkipped: number;
+  baselineDevicesFailed: number;
+  baselineBucketsCreated: number;
 };
