@@ -209,23 +209,47 @@ model DeviceBaseline {
   id       String @id @default(uuid()) @db.Uuid
   deviceId String @map("device_id") @db.Uuid
 
-  baselineType String @map("baseline_type")
+  metric       String @default("energy_wh")
+  granularity  String @default("hourly_local")
+  profileShape String @default("weekday_weekend_hour") @map("profile_shape")
   windowDays   Int    @default(14) @map("window_days")
   modelVersion String @map("model_version")
-  params       Json   @db.JsonB
+  timezone     String
+  sourceStartDate DateTime @map("source_start_date") @db.Date
+  sourceEndDate   DateTime @map("source_end_date") @db.Date
+  historyDaysUsed Int      @map("history_days_used")
+  minBucketSamples Int     @default(2) @map("min_bucket_samples")
+  params       Json?  @db.JsonB
+  summary      Json?  @db.JsonB
 
-  trainedFrom DateTime @map("trained_from") @db.Timestamptz(6)
-  trainedTo   DateTime @map("trained_to") @db.Timestamptz(6)
-
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  supersededAt DateTime? @map("superseded_at") @db.Timestamptz(6)
 
   device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  buckets       DeviceBaselineBucket[]
   anomalyEvents AnomalyEvent[]
 
   @@index([deviceId])
   @@index([deviceId, isActive])
   @@map("device_baselines")
+}
+
+model DeviceBaselineBucket {
+  id         BigInt  @id @default(autoincrement())
+  baselineId String  @map("baseline_id") @db.Uuid
+  dayGroup   String  @map("day_group")
+  localHour  Int     @map("local_hour")
+  sampleCount Int    @map("sample_count")
+  expectedEnergyWh Decimal @map("expected_energy_wh") @db.Decimal(14, 4)
+  lowerBoundEnergyWh Decimal @map("lower_bound_energy_wh") @db.Decimal(14, 4)
+  upperBoundEnergyWh Decimal @map("upper_bound_energy_wh") @db.Decimal(14, 4)
+
+  baseline DeviceBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+
+  @@unique([baselineId, dayGroup, localHour], map: "device_baseline_buckets_baseline_day_hour_unique")
+  @@index([baselineId])
+  @@map("device_baseline_buckets")
 }
 
 model AnomalyEvent {

@@ -247,6 +247,7 @@ Responsabilidades:
 
 - ejecutar polling Shelly una sola vez por proceso
 - ejecutar aggregates una sola vez por proceso
+- refrescar baselines dentro de la corrida de aggregates
 - cerrar Prisma al terminar
 - proteger corridas con lock distribuido en DB
 
@@ -254,6 +255,7 @@ Reglas actuales:
 
 - `job-shelly-polling.ts` corre `runShellyReadingsPollingOnce()`
 - `job-aggregates.ts` corre `runDeviceUsageAggregationOnce()`
+- el refresco de baseline corre dentro de `runDeviceUsageAggregationOnce()`, no como tercer job separado
 - ambos jobs intentan tomar lock en `job_locks`
 - si el lock ya está tomado, el proceso sale como `skipped`
 
@@ -276,6 +278,7 @@ Responsabilidades:
 - recorrer devices que ya tienen `device_readings`
 - materializar `device_usage_hourly`
 - materializar `device_usage_daily`
+- refrescar `device_baselines` activos cuando ya existe un nuevo día local cerrado
 - calcular agregados diarios usando `home.timezone`
 
 Reglas actuales:
@@ -286,6 +289,9 @@ Reglas actuales:
 - `hourly` se calcula por hora UTC cerrada
 - `daily` se calcula por día local cerrado del `home.timezone`
 - `daily` se calcula directo desde `device_readings`, no desde `hourly`
+- baseline usa `device_usage_hourly` + `device_usage_daily`
+- baseline v1 usa ventana de 14 días cerrados contiguos
+- baseline v1 materializa buckets `weekday/weekend x 24 horas`
 - si falla un device, la corrida sigue con los demás
 
 ## 6. App entrypoint y middleware global
@@ -1300,6 +1306,19 @@ Comportamiento actual:
 - en producción la frecuencia la define el scheduler externo del job
 - las tablas agregadas no incluyen la hora UTC actual ni el día local actual
 
+### Baseline
+
+- `BASELINE_ENABLED`
+- `BASELINE_WINDOW_DAYS`
+- `BASELINE_MIN_BUCKET_SAMPLES`
+
+Comportamiento actual:
+
+- si `BASELINE_ENABLED` no existe, baseline queda activo excepto en `NODE_ENV=test`
+- baseline corre dentro del mismo runner de aggregates
+- el valor recomendado de `BASELINE_WINDOW_DAYS` es `14`
+- baseline solo se activa si existen días cerrados contiguos suficientes y buckets con muestras mínimas
+
 ## 14. Modelo de datos actual
 
 ### Implementado y en uso activo
@@ -1318,6 +1337,7 @@ Comportamiento actual:
 - `device_usage_hourly`
 - `device_usage_daily`
 - `device_baselines`
+- `device_baseline_buckets`
 - `anomaly_events`
 - `user_push_tokens`
 - `notification_logs`
@@ -1384,10 +1404,10 @@ Comportamiento actual:
 - evita que polling o aggregates se ejecuten en paralelo en procesos distintos
 - usa lease temporal con `expires_at`
 
-#### `device_baselines` y `anomaly_events`
+#### `device_baselines`, `device_baseline_buckets` y `anomaly_events`
 
-- tablas preparadas para fase de detección de anomalías
-- aún sin pipeline completo activo en este backend
+- `device_baselines` y `device_baseline_buckets` ya se materializan desde el job de aggregates
+- `anomaly_events` sigue preparado para la siguiente fase de detección de anomalías
 
 ## 15. Estado funcional actual
 
@@ -1405,12 +1425,12 @@ Comportamiento actual:
 - borrado de integración Shelly
 - polling Shelly para `device_readings`
 - job de agregación horaria y diaria para `device_usage_hourly` y `device_usage_daily`
+- entrenamiento/refresco de baseline para `device_baselines` y `device_baseline_buckets`
 - separación entre servidor HTTP y jobs batch
 - jobs one-shot para polling y aggregates
 
 ### No implementado completamente todavía
 
-- entrenamiento de baselines
 - detección de anomalías
 - envío de notificaciones push
 
