@@ -1,5 +1,5 @@
 import { env } from "../../config/env.js";
-import { refreshDeviceBaseline } from "../baseline/device-baseline.service.js";
+import { trainDeviceAnomalyModel } from "../anomaly-detection/anomaly-detection.service.js";
 import {
   aggregateDeviceUsage,
   listAggregateEligibleDevices,
@@ -8,20 +8,23 @@ import type { DeviceUsageAggregationStats } from "./usage-aggregation.types.js";
 
 export async function runDeviceUsageAggregationOnce(options?: {
   batchSize?: number;
-  enableBaseline?: boolean;
+  enableMl?: boolean;
+  mlTrainingWindowDays?: number;
+  mlContamination?: number;
+  mlServiceBaseUrl?: string;
 }): Promise<DeviceUsageAggregationStats> {
   const batchSize = Math.max(1, options?.batchSize ?? env.AGGREGATES_DEVICE_BATCH_SIZE);
-  const baselineEnabled = options?.enableBaseline ?? env.BASELINE_ENABLED;
+  const mlEnabled = options?.enableMl ?? env.ML_ENABLED;
   const stats: DeviceUsageAggregationStats = {
     devicesProcessed: 0,
     devicesFailed: 0,
     hourlyRowsUpserted: 0,
     dailyRowsUpserted: 0,
-    baselineDevicesEvaluated: 0,
-    baselineDevicesActivated: 0,
-    baselineDevicesSkipped: 0,
-    baselineDevicesFailed: 0,
-    baselineBucketsCreated: 0,
+    modelDevicesEvaluated: 0,
+    modelDevicesTrained: 0,
+    modelDevicesSkipped: 0,
+    modelDevicesFailed: 0,
+    featureRowsUpserted: 0,
   };
 
   let cursorId: string | null = null;
@@ -43,27 +46,30 @@ export async function runDeviceUsageAggregationOnce(options?: {
         stats.hourlyRowsUpserted += result.hourlyRowsUpserted;
         stats.dailyRowsUpserted += result.dailyRowsUpserted;
 
-        if (!baselineEnabled) {
+        if (!mlEnabled) {
           continue;
         }
 
-        stats.baselineDevicesEvaluated += 1;
+        stats.modelDevicesEvaluated += 1;
 
         try {
-          const baselineResult = await refreshDeviceBaseline(device.id, {
-            enabled: baselineEnabled,
+          const trainingResult = await trainDeviceAnomalyModel(device.id, {
+            enabled: mlEnabled,
+            trainingWindowDays: options?.mlTrainingWindowDays,
+            contamination: options?.mlContamination,
+            mlServiceBaseUrl: options?.mlServiceBaseUrl,
           });
 
-          if (baselineResult.status === "activated") {
-            stats.baselineDevicesActivated += 1;
-            stats.baselineBucketsCreated += baselineResult.bucketsCreated;
-          } else if (baselineResult.status !== "disabled") {
-            stats.baselineDevicesSkipped += 1;
+          stats.featureRowsUpserted += trainingResult.featureRowsUpserted;
+          if (trainingResult.status === "trained") {
+            stats.modelDevicesTrained += 1;
+          } else if (trainingResult.status !== "disabled") {
+            stats.modelDevicesSkipped += 1;
           }
         } catch (error) {
-          stats.baselineDevicesFailed += 1;
+          stats.modelDevicesFailed += 1;
           const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[UsageAggregates][Baseline] device ${device.id} failed: ${message}`);
+          console.warn(`[UsageAggregates][ML] device ${device.id} failed: ${message}`);
         }
       } catch (error) {
         stats.devicesFailed += 1;

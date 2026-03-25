@@ -67,6 +67,9 @@ backend/src/
       validate.ts
   config/
     env.ts
+  scripts/
+    ml-score-reading.ts
+    ml-train-device.ts
   jobs/
     job-aggregates.ts
     job-shelly-polling.ts
@@ -96,6 +99,13 @@ backend/src/
       usage-aggregation.repository.ts
       usage-aggregation.service.ts
       usage-aggregation.types.ts
+    anomaly-detection/
+      anomaly-detection.constants.ts
+      anomaly-detection.repository.ts
+      anomaly-detection.service.ts
+      anomaly-detection.types.ts
+      feature-engineering.ts
+      ml-service.client.ts
     shelly/
       shelly.controller.ts
       shelly.routes.ts
@@ -119,6 +129,18 @@ backend/src/
         shelly.types.ts
   server.dev.ts
   server.ts
+```
+
+Servicio interno adicional:
+
+```text
+ml-service/
+  app/
+    main.py
+  Dockerfile
+  .env.example
+  .gitignore
+  requirements.txt
 ```
 
 ## 5. Diseño de módulos
@@ -247,7 +269,8 @@ Responsabilidades:
 
 - ejecutar polling Shelly una sola vez por proceso
 - ejecutar aggregates una sola vez por proceso
-- refrescar baselines dentro de la corrida de aggregates
+- ejecutar scoring de anomalías dentro de polling
+- ejecutar entrenamiento de modelos dentro de aggregates
 - cerrar Prisma al terminar
 - proteger corridas con lock distribuido en DB
 
@@ -255,7 +278,8 @@ Reglas actuales:
 
 - `job-shelly-polling.ts` corre `runShellyReadingsPollingOnce()`
 - `job-aggregates.ts` corre `runDeviceUsageAggregationOnce()`
-- el refresco de baseline corre dentro de `runDeviceUsageAggregationOnce()`, no como tercer job separado
+- el scoring de anomalías corre dentro de polling después de insertar cada lectura nueva
+- el entrenamiento del modelo corre dentro de `runDeviceUsageAggregationOnce()`, no como tercer job separado
 - ambos jobs intentan tomar lock en `job_locks`
 - si el lock ya está tomado, el proceso sale como `skipped`
 
@@ -278,7 +302,7 @@ Responsabilidades:
 - recorrer devices que ya tienen `device_readings`
 - materializar `device_usage_hourly`
 - materializar `device_usage_daily`
-- refrescar `device_baselines` activos cuando ya existe un nuevo día local cerrado
+- entrenar/reentrenar modelos de anomalías cuando ya existe un nuevo día local cerrado
 - calcular agregados diarios usando `home.timezone`
 
 Reglas actuales:
@@ -289,9 +313,10 @@ Reglas actuales:
 - `hourly` se calcula por hora UTC cerrada
 - `daily` se calcula por día local cerrado del `home.timezone`
 - `daily` se calcula directo desde `device_readings`, no desde `hourly`
-- baseline usa `device_usage_hourly` + `device_usage_daily`
-- baseline v1 usa ventana de 14 días cerrados contiguos
-- baseline v1 materializa buckets `weekday/weekend x 24 horas`
+- el entrenamiento ML usa `device_usage_daily` para elegibilidad y `device_readings` para feature engineering
+- el modelo v1 es `IsolationForest`, uno por device
+- el modelo v1 usa ventana de 30 días locales cerrados contiguos
+- si no existe modelo activo, las lecturas se ingieren igual y la predicción queda como `model_not_ready`
 - si falla un device, la corrida sigue con los demás
 
 ## 6. App entrypoint y middleware global
@@ -1306,18 +1331,35 @@ Comportamiento actual:
 - en producción la frecuencia la define el scheduler externo del job
 - las tablas agregadas no incluyen la hora UTC actual ni el día local actual
 
-### Baseline
+### ML / Anomaly Detection
 
-- `BASELINE_ENABLED`
-- `BASELINE_WINDOW_DAYS`
-- `BASELINE_MIN_BUCKET_SAMPLES`
+- `ML_ENABLED`
+- `ML_SERVICE_BASE_URL`
+- `ML_SCORE_TIMEOUT_MS`
+- `ML_TRAIN_TIMEOUT_MS`
+- `ML_IF_CONTAMINATION`
+- `ML_TRAINING_WINDOW_DAYS`
 
 Comportamiento actual:
 
-- si `BASELINE_ENABLED` no existe, baseline queda activo excepto en `NODE_ENV=test`
-- baseline corre dentro del mismo runner de aggregates
-- el valor recomendado de `BASELINE_WINDOW_DAYS` es `14`
-- baseline solo se activa si existen días cerrados contiguos suficientes y buckets con muestras mínimas
+- si `ML_ENABLED=false`, polling y aggregates omiten scoring y entrenamiento ML
+- el scoring corre dentro del polling después de insertar una lectura nueva
+- el entrenamiento corre dentro del runner de aggregates
+- el valor recomendado de `ML_TRAINING_WINDOW_DAYS` es `30`
+- el valor recomendado de `ML_IF_CONTAMINATION` es `0.02`
+- si `ML_ENABLED=true`, `ML_SERVICE_BASE_URL` es obligatoria
+
+### ML service local
+
+- `ML_SERVICE_HOST`
+- `ML_SERVICE_PORT`
+- `ML_SERVICE_LOG_LEVEL`
+
+Comportamiento actual:
+
+- estas variables solo las usa el contenedor/proceso Python del `ml-service`
+- no reemplazan `ML_SERVICE_BASE_URL` del backend
+- el backend se conecta al `ml-service` por HTTP
 
 ## 14. Modelo de datos actual
 
@@ -1336,8 +1378,9 @@ Comportamiento actual:
 
 - `device_usage_hourly`
 - `device_usage_daily`
-- `device_baselines`
-- `device_baseline_buckets`
+- `device_anomaly_models`
+- `device_reading_features`
+- `device_anomaly_predictions`
 - `anomaly_events`
 - `user_push_tokens`
 - `notification_logs`
@@ -1404,10 +1447,140 @@ Comportamiento actual:
 - evita que polling o aggregates se ejecuten en paralelo en procesos distintos
 - usa lease temporal con `expires_at`
 
-#### `device_baselines`, `device_baseline_buckets` y `anomaly_events`
+#### `device_anomaly_models`, `device_reading_features`, `device_anomaly_predictions` y `anomaly_events`
 
-- `device_baselines` y `device_baseline_buckets` ya se materializan desde el job de aggregates
-- `anomaly_events` sigue preparado para la siguiente fase de detección de anomalías
+- `device_anomaly_models` guarda snapshots versionados del `IsolationForest` activo por device
+- el modelo entrenado no se guarda como archivo en disco; se serializa con `pickle` y se guarda en `artifact`
+- `device_reading_features` materializa el vector de features por lectura
+- `device_anomaly_predictions` guarda el resultado de scoring por `device_reading`
+- `anomaly_events` persiste solo los casos marcados como anomalía
+
+## 14.1 Flujo ML actual
+
+### Entrenamiento
+
+Resumen:
+
+1. `job-aggregates.ts` ejecuta `runDeviceUsageAggregationOnce()`
+2. por cada device elegible, primero materializa `device_usage_hourly` y `device_usage_daily`
+3. luego llama `trainDeviceAnomalyModel(deviceId)`
+4. `trainDeviceAnomalyModel()` revisa en `device_usage_daily` si existen `ML_TRAINING_WINDOW_DAYS` días locales cerrados y contiguos
+5. si no existe esa ventana completa, el device queda sin modelo activo
+6. si existe, el backend genera o completa `device_reading_features` a partir de `device_readings`
+7. el backend manda `trainingRows` al `ml-service` por `POST /train`
+8. el `ml-service` entrena `IsolationForest`
+9. el backend guarda el artefacto serializado del modelo en `device_anomaly_models`
+10. si ya había un modelo activo del mismo device, lo marca como `superseded`
+
+Reglas actuales:
+
+- el modelo es uno por `device`
+- la ventana de entrenamiento se define con `ML_TRAINING_WINDOW_DAYS`
+- el entrenamiento usa `device_usage_daily` para decidir elegibilidad y `device_readings` para construir features
+- si el modelo activo ya tiene el mismo `trainedTo`, no se reentrena
+- en práctica, el reentrenamiento ocurre como máximo una vez por nuevo día local cerrado por device
+
+### Scoring
+
+Resumen:
+
+1. polling inserta una fila nueva en `device_readings`
+2. después llama `scoreDeviceReading(readingId)`
+3. el backend arma el `featureVector` de esa lectura usando la lectura actual y lecturas previas del mismo device
+4. el feature se guarda en `device_reading_features`
+5. el backend busca el modelo activo del device en `device_anomaly_models`
+6. si no existe modelo, guarda una predicción `model_not_ready`
+7. si existe, manda `artifact + featureVector` al `ml-service` por `POST /score`
+8. el `ml-service` deserializa el modelo y scorea la lectura
+9. el backend guarda el resultado en `device_anomaly_predictions`
+10. si `isAnomaly=true`, también crea `anomaly_events`
+
+Reglas actuales:
+
+- todas las lecturas nuevas de un mismo device usan el mismo modelo activo de ese device
+- el `ml-service` es stateless: no guarda modelos en memoria permanente ni habla con Postgres
+- el backend es quien decide qué modelo usar y lo recupera desde DB
+
+### Features actuales
+
+- `apower`
+- `aenergyDelta`
+- `outputNumeric`
+- `hourSin`
+- `hourCos`
+- `dayOfWeekSin`
+- `dayOfWeekCos`
+- `deltaPowerPrev`
+- `rollingMeanPower5`
+- `rollingStdPower5`
+
+### Dónde vive físicamente el modelo
+
+- la implementación del algoritmo vive en `scikit-learn IsolationForest`
+- el modelo entrenado de cada device vive en la tabla `device_anomaly_models`
+- el campo `artifact` guarda el modelo serializado con `pickle` y codificado en base64
+- el `ml-service` reconstruye el modelo en memoria solo durante cada request de `/score`
+
+## 14.2 Prueba manual local
+
+### Levantar `ml-service`
+
+```bash
+cd ml-service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+set -a
+source .env
+set +a
+uvicorn app.main:app --host "${ML_SERVICE_HOST:-0.0.0.0}" --port "${ML_SERVICE_PORT:-8000}" --log-level "${ML_SERVICE_LOG_LEVEL:-info}"
+```
+
+Health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### Preparar backend para pruebas locales
+
+Valores mínimos en `backend/.env`:
+
+```env
+ML_ENABLED=true
+ML_SERVICE_BASE_URL=http://localhost:8000
+ML_TRAINING_WINDOW_DAYS=13
+ML_IF_CONTAMINATION=0.02
+```
+
+Si el ambiente todavía no tiene 30 días cerrados, bajar `ML_TRAINING_WINDOW_DAYS` permite crear el primer modelo con menos historia.
+
+### Entrenar un `device` manualmente
+
+Script disponible:
+
+- `npm run ml:train-device -- <deviceId>`
+
+Ese script:
+
+- llama `trainDeviceAnomalyModel(deviceId)`
+- usa la data real ya existente en Postgres
+- crea o refresca el modelo activo del device si la ventana cerrada es válida
+- imprime `result` y el `activeModel`
+
+### Scorear un `reading` manualmente
+
+Script disponible:
+
+- `npm run ml:score-reading -- <readingId>`
+
+Ese script:
+
+- llama `scoreDeviceReading(readingId)`
+- guarda la predicción en `device_anomaly_predictions`
+- si aplica, crea `anomaly_events`
+- imprime `result`, `prediction` y `anomalyEvent`
 
 ## 15. Estado funcional actual
 
@@ -1425,13 +1598,14 @@ Comportamiento actual:
 - borrado de integración Shelly
 - polling Shelly para `device_readings`
 - job de agregación horaria y diaria para `device_usage_hourly` y `device_usage_daily`
-- entrenamiento/refresco de baseline para `device_baselines` y `device_baseline_buckets`
+- scoring de anomalías por lectura nueva desde el polling
+- entrenamiento/reentrenamiento ML con `IsolationForest`
 - separación entre servidor HTTP y jobs batch
 - jobs one-shot para polling y aggregates
 
 ### No implementado completamente todavía
 
-- detección de anomalías
+- endpoints para inspección de modelos/predicciones/anomalías
 - envío de notificaciones push
 
 ## 16. Principios de diseño que sigue el backend

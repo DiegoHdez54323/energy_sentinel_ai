@@ -36,6 +36,10 @@ test("createShellyPollingDebugRun guarda resumen global y archivo por integracio
         readingsInserted: 0,
         readingsDuplicated: 0,
         readingsSkipped: 1,
+        anomalyPredictionsCreated: 0,
+        anomalyModelNotReady: 0,
+        anomalyScoreFailures: 0,
+        anomalyEventsCreated: 0,
       },
       error: new Error("debug failure"),
     });
@@ -54,6 +58,10 @@ test("createShellyPollingDebugRun guarda resumen global y archivo por integracio
         readingsInserted: 0,
         readingsDuplicated: 0,
         readingsSkipped: 1,
+        anomalyPredictionsCreated: 0,
+        anomalyModelNotReady: 0,
+        anomalyScoreFailures: 0,
+        anomalyEventsCreated: 0,
       },
       error: new Error("run failure"),
     });
@@ -122,6 +130,10 @@ test("createShellyPollingDebugRun no escribe archivos cuando esta desactivado", 
         readingsInserted: 0,
         readingsDuplicated: 0,
         readingsSkipped: 0,
+        anomalyPredictionsCreated: 0,
+        anomalyModelNotReady: 0,
+        anomalyScoreFailures: 0,
+        anomalyEventsCreated: 0,
       },
     });
 
@@ -139,6 +151,10 @@ test("createShellyPollingDebugRun no escribe archivos cuando esta desactivado", 
         readingsInserted: 0,
         readingsDuplicated: 0,
         readingsSkipped: 0,
+        anomalyPredictionsCreated: 0,
+        anomalyModelNotReady: 0,
+        anomalyScoreFailures: 0,
+        anomalyEventsCreated: 0,
       },
     });
 

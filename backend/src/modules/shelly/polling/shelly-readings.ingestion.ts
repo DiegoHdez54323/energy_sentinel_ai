@@ -1,5 +1,6 @@
 import { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../../lib/prisma.js";
+import { scoreDeviceReading } from "../../anomaly-detection/anomaly-detection.service.js";
 import { fetchShellyAllStatusWithRetry } from "../shared/shelly-all-status.js";
 import type { ShellyPollingDebugRun } from "./shelly-polling-debug.js";
 import {
@@ -41,7 +42,7 @@ async function getLatestAenergyTotal(deviceId: string): Promise<number | null> {
 async function insertDeviceReading(
   deviceId: string,
   reading: ShellySwitch0Reading,
-): Promise<"inserted" | "duplicate"> {
+): Promise<{ status: "inserted"; readingId: bigint } | { status: "duplicate" }> {
   const previousAenergyTotal = await getLatestAenergyTotal(deviceId);
 
   const aenergyDelta = (
@@ -52,7 +53,7 @@ async function insertDeviceReading(
     ? (reading.aenergyTotal - previousAenergyTotal)
     : null;
 
-  const inserted = await prisma.$executeRaw`
+  const insertedRows = await prisma.$queryRaw<Array<{ id: bigint }>>`
     INSERT INTO "device_readings" (
       "device_id",
       "ts",
@@ -91,9 +92,12 @@ async function insertDeviceReading(
       ${reading.source}
     )
     ON CONFLICT ("device_id", "ts") DO NOTHING
+    RETURNING "id"
   `;
 
-  return inserted > 0 ? "inserted" : "duplicate";
+  return insertedRows[0]
+    ? { status: "inserted", readingId: insertedRows[0].id }
+    : { status: "duplicate" };
 }
 
 export async function pollShellyIntegrationReadings(
@@ -103,6 +107,10 @@ export async function pollShellyIntegrationReadings(
   readingsInserted: number;
   readingsDuplicated: number;
   readingsSkipped: number;
+  anomalyPredictionsCreated: number;
+  anomalyModelNotReady: number;
+  anomalyScoreFailures: number;
+  anomalyEventsCreated: number;
 }> {
   const startedAt = new Date();
   let payload: unknown = null;
@@ -114,6 +122,10 @@ export async function pollShellyIntegrationReadings(
     readingsInserted: 0,
     readingsDuplicated: 0,
     readingsSkipped: 0,
+    anomalyPredictionsCreated: 0,
+    anomalyModelNotReady: 0,
+    anomalyScoreFailures: 0,
+    anomalyEventsCreated: 0,
   };
 
   try {
@@ -163,8 +175,25 @@ export async function pollShellyIntegrationReadings(
       }
 
       const insertResult = await insertDeviceReading(device.id, reading);
-      if (insertResult === "inserted") {
+      if (insertResult.status === "inserted") {
         result.readingsInserted += 1;
+        try {
+          const scoringResult = await scoreDeviceReading(insertResult.readingId);
+          if (scoringResult.predictionCreated) {
+            result.anomalyPredictionsCreated += 1;
+          }
+          if (scoringResult.status === "model_not_ready") {
+            result.anomalyModelNotReady += 1;
+          }
+          if (scoringResult.status === "score_failed") {
+            result.anomalyScoreFailures += 1;
+          }
+          if (scoringResult.anomalyCreated) {
+            result.anomalyEventsCreated += 1;
+          }
+        } catch {
+          result.anomalyScoreFailures += 1;
+        }
       } else {
         result.readingsDuplicated += 1;
       }
