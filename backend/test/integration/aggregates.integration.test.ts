@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { prisma } from "../../src/lib/prisma.js";
 import { runDeviceUsageAggregationOnce } from "../../src/modules/aggregates/aggregates.service.js";
 
+const originalFetch = globalThis.fetch;
+
 function asNumber(value: { toString: () => string } | number | null): number | null {
   if (value === null) {
     return null;
@@ -96,19 +98,7 @@ async function seedDevice(options: {
   return { user, home, device };
 }
 
-async function seedBaselineEligibilityReading(deviceId: string) {
-  await prisma.deviceReading.create({
-    data: {
-      deviceId,
-      ts: new Date(),
-      apower: 1,
-      aenergyDelta: 1,
-      source: "shelly_cloud",
-    },
-  });
-}
-
-async function seedBaselineHistory(options: {
+async function seedModelTrainingReadings(options: {
   deviceId: string;
   startDate: string;
   days: number;
@@ -116,23 +106,13 @@ async function seedBaselineHistory(options: {
 }) {
   const missingDayIndexes = new Set(options.missingDayIndexes ?? []);
   const start = new Date(`${options.startDate}T00:00:00.000Z`);
-  const hourlyRows: Array<{
+  const readings: Array<{
     deviceId: string;
-    hourTs: Date;
-    energyWh: number;
-    avgPowerW: number;
-    maxPowerW: number;
-    minPowerW: number;
-    samplesCount: number;
-  }> = [];
-  const dailyRows: Array<{
-    deviceId: string;
-    date: Date;
-    energyWh: number;
-    avgPowerW: number;
-    maxPowerW: number;
-    minPowerW: number;
-    samplesCount: number;
+    ts: Date;
+    apower: number;
+    aenergyDelta: number;
+    output: boolean;
+    source: string;
   }> = [];
 
   for (let dayIndex = 0; dayIndex < options.days; dayIndex += 1) {
@@ -143,59 +123,39 @@ async function seedBaselineHistory(options: {
     const date = addDays(start, dayIndex);
     const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
     const base = weekend ? 200 : 100;
-    let totalEnergy = 0;
 
     for (let hour = 0; hour < 24; hour += 1) {
-      const energy = base + hour;
-      totalEnergy += energy;
-
-      hourlyRows.push({
+      const power = base + hour;
+      readings.push({
         deviceId: options.deviceId,
-        hourTs: new Date(Date.UTC(
+        ts: new Date(Date.UTC(
           date.getUTCFullYear(),
           date.getUTCMonth(),
           date.getUTCDate(),
           hour,
-          0,
+          5,
           0,
           0,
         )),
-        energyWh: energy,
-        avgPowerW: energy,
-        maxPowerW: energy,
-        minPowerW: energy,
-        samplesCount: 1,
+        apower: power,
+        aenergyDelta: Math.max(1, Math.round(power / 10)),
+        output: true,
+        source: "shelly_cloud",
       });
     }
-
-    dailyRows.push({
-      deviceId: options.deviceId,
-      date,
-      energyWh: totalEnergy,
-      avgPowerW: totalEnergy / 24,
-      maxPowerW: base + 23,
-      minPowerW: base,
-      samplesCount: 24,
-    });
   }
 
-  await prisma.deviceUsageHourly.createMany({
-    data: hourlyRows,
-  });
-  await prisma.deviceUsageDaily.createMany({
-    data: dailyRows,
+  await prisma.deviceReading.createMany({
+    data: readings,
   });
 }
 
-test.beforeEach(async () => {
-  await prisma.user.deleteMany({ where: { email: { startsWith: "agg-it-" } } });
-});
-
 test.afterEach(async () => {
-  await prisma.user.deleteMany({ where: { email: { startsWith: "agg-it-" } } });
+  globalThis.fetch = originalFetch;
 });
 
 test.after(async () => {
+  await prisma.user.deleteMany({ where: { email: { startsWith: "agg-it-" } } });
   await prisma.$disconnect();
 });
 
@@ -232,7 +192,9 @@ test("runDeviceUsageAggregationOnce hace backfill de buckets cerrados hourly y d
     ],
   });
 
-  const stats = await runDeviceUsageAggregationOnce();
+  const stats = await runDeviceUsageAggregationOnce({
+    enableMl: false,
+  });
   assert.equal(stats.devicesProcessed >= 1, true);
   assert.equal(stats.hourlyRowsUpserted >= 2, true);
   assert.equal(stats.dailyRowsUpserted >= 2, true);
@@ -322,7 +284,9 @@ test("runDeviceUsageAggregationOnce no materializa la hora UTC actual ni el dia 
     ],
   });
 
-  await runDeviceUsageAggregationOnce();
+  await runDeviceUsageAggregationOnce({
+    enableMl: false,
+  });
 
   const hourly = await prisma.deviceUsageHourly.findMany({
     where: { deviceId: device.id },
@@ -368,7 +332,9 @@ test("runDeviceUsageAggregationOnce es idempotente para buckets cerrados ya mate
     ],
   });
 
-  await runDeviceUsageAggregationOnce();
+  await runDeviceUsageAggregationOnce({
+    enableMl: false,
+  });
 
   const firstHourly = await prisma.deviceUsageHourly.findMany({
     where: { deviceId: device.id },
@@ -377,7 +343,9 @@ test("runDeviceUsageAggregationOnce es idempotente para buckets cerrados ya mate
     where: { deviceId: device.id },
   });
 
-  await runDeviceUsageAggregationOnce();
+  await runDeviceUsageAggregationOnce({
+    enableMl: false,
+  });
 
   const secondHourly = await prisma.deviceUsageHourly.findMany({
     where: { deviceId: device.id },
@@ -436,6 +404,7 @@ test("runDeviceUsageAggregationOnce sigue procesando otros devices si uno falla"
 
   const stats = await runDeviceUsageAggregationOnce({
     batchSize: 10,
+    enableMl: false,
   });
 
   assert.equal(stats.devicesProcessed >= 1, true);
@@ -460,87 +429,102 @@ test("runDeviceUsageAggregationOnce sigue procesando otros devices si uno falla"
   assert.equal(invalidDaily.length, 0);
 });
 
-test("runDeviceUsageAggregationOnce activa baseline con 14 dias cerrados contiguos", async () => {
+test("runDeviceUsageAggregationOnce entrena un modelo de anomalías con 30 dias cerrados contiguos", async () => {
   const suffix = `${Date.now()}-e`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
   });
 
-  await seedBaselineEligibilityReading(device.id);
-  await seedBaselineHistory({
+  await seedModelTrainingReadings({
     deviceId: device.id,
-    startDate: "2026-03-02",
-    days: 14,
+    startDate: "2026-02-01",
+    days: 30,
   });
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/train")) {
+      return new Response(JSON.stringify({
+        artifact: { pickleBase64: "trained-model" },
+        summary: {
+          hourlyReference: [
+            { dayGroup: "weekday", localHour: 6, expectedApower: 106 },
+            { dayGroup: "weekend", localHour: 6, expectedApower: 206 },
+          ],
+        },
+        trainingSampleCount: 720,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
 
   const stats = await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  assert.equal(stats.baselineDevicesEvaluated >= 1, true);
-  assert.equal(stats.baselineDevicesActivated >= 1, true);
-  assert.equal(stats.baselineBucketsCreated >= 48, true);
+  assert.equal(stats.modelDevicesEvaluated >= 1, true);
+  assert.equal(stats.modelDevicesTrained >= 1, true);
+  assert.equal(stats.featureRowsUpserted >= 720, true);
 
-  const baseline = await prisma.deviceBaseline.findFirst({
+  const model = await prisma.deviceAnomalyModel.findFirst({
     where: {
       deviceId: device.id,
       isActive: true,
     },
-    include: {
-      buckets: {
-        orderBy: [
-          { dayGroup: "asc" },
-          { localHour: "asc" },
-        ],
-      },
+  });
+  const featuresCount = await prisma.deviceReadingFeature.count({
+    where: {
+      deviceId: device.id,
     },
   });
 
-  assert.ok(baseline);
-  assert.equal(baseline?.metric, "energy_wh");
-  assert.equal(baseline?.granularity, "hourly_local");
-  assert.equal(baseline?.profileShape, "weekday_weekend_hour");
-  assert.equal(baseline?.timezone, "UTC");
-  assert.equal(baseline?.sourceStartDate.toISOString().slice(0, 10), "2026-03-02");
-  assert.equal(baseline?.sourceEndDate.toISOString().slice(0, 10), "2026-03-15");
-  assert.equal(baseline?.windowDays, 14);
-  assert.equal(baseline?.historyDaysUsed, 14);
-  assert.equal(baseline?.minBucketSamples, 2);
-  assert.equal(baseline?.buckets.length, 48);
-
-  const weekdayHour6 = baseline?.buckets.find((bucket) => bucket.dayGroup === "weekday" && bucket.localHour === 6);
-  const weekendHour6 = baseline?.buckets.find((bucket) => bucket.dayGroup === "weekend" && bucket.localHour === 6);
-
-  assert.equal(weekdayHour6?.sampleCount, 10);
-  assert.equal(asNumber(weekdayHour6?.expectedEnergyWh ?? null), 106);
-  assert.equal(asNumber(weekdayHour6?.lowerBoundEnergyWh ?? null), 106);
-  assert.equal(asNumber(weekdayHour6?.upperBoundEnergyWh ?? null), 106);
-  assert.equal(weekendHour6?.sampleCount, 4);
-  assert.equal(asNumber(weekendHour6?.expectedEnergyWh ?? null), 206);
-  assert.equal(asNumber(weekendHour6?.lowerBoundEnergyWh ?? null), 206);
-  assert.equal(asNumber(weekendHour6?.upperBoundEnergyWh ?? null), 206);
+  assert.ok(model);
+  assert.equal(model?.modelType, "isolation_forest");
+  assert.equal(model?.featureSchemaVersion, "reading-v1");
+  assert.equal(model?.trainingWindowDays, 30);
+  assert.equal(model?.trainedFrom.toISOString().slice(0, 10), "2026-02-01");
+  assert.equal(model?.trainedTo.toISOString().slice(0, 10), "2026-03-02");
+  assert.equal(model?.trainingSampleCount, 720);
+  assert.equal(featuresCount, 720);
 });
 
-test("runDeviceUsageAggregationOnce no reentrena baseline si no hay un nuevo dia cerrado", async () => {
+test("runDeviceUsageAggregationOnce no reentrena el modelo si no hay un nuevo dia cerrado", async () => {
   const suffix = `${Date.now()}-f`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
   });
 
-  await seedBaselineEligibilityReading(device.id);
-  await seedBaselineHistory({
+  await seedModelTrainingReadings({
     deviceId: device.id,
-    startDate: "2026-03-02",
-    days: 14,
+    startDate: "2026-02-01",
+    days: 30,
   });
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/train")) {
+      return new Response(JSON.stringify({
+        artifact: { pickleBase64: "trained-model" },
+        summary: { hourlyReference: [] },
+        trainingSampleCount: 720,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
 
   await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  const firstBaseline = await prisma.deviceBaseline.findFirst({
+  const firstModel = await prisma.deviceAnomalyModel.findFirst({
     where: {
       deviceId: device.id,
       isActive: true,
@@ -548,95 +532,113 @@ test("runDeviceUsageAggregationOnce no reentrena baseline si no hay un nuevo dia
   });
 
   const secondStats = await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  const baselines = await prisma.deviceBaseline.findMany({
+  const models = await prisma.deviceAnomalyModel.findMany({
     where: {
       deviceId: device.id,
     },
   });
 
-  assert.ok(firstBaseline);
-  assert.equal(secondStats.baselineDevicesEvaluated >= 1, true);
-  assert.equal(secondStats.baselineDevicesSkipped >= 1, true);
-  assert.equal(baselines.length, 1);
-  assert.equal(baselines[0]?.id, firstBaseline?.id);
+  assert.ok(firstModel);
+  assert.equal(secondStats.modelDevicesEvaluated >= 1, true);
+  assert.equal(secondStats.modelDevicesSkipped >= 1, true);
+  assert.equal(models.length, 1);
+  assert.equal(models[0]?.id, firstModel?.id);
 });
 
-test("runDeviceUsageAggregationOnce supersede baseline activo cuando entra un nuevo dia cerrado", async () => {
+test("runDeviceUsageAggregationOnce supersede el modelo activo cuando entra un nuevo dia cerrado", async () => {
   const suffix = `${Date.now()}-g`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
   });
 
-  await seedBaselineEligibilityReading(device.id);
-  await seedBaselineHistory({
+  await seedModelTrainingReadings({
     deviceId: device.id,
-    startDate: "2026-03-02",
-    days: 14,
+    startDate: "2026-02-01",
+    days: 30,
   });
+  let trainCall = 0;
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/train")) {
+      trainCall += 1;
+      return new Response(JSON.stringify({
+        artifact: { pickleBase64: `trained-model-${trainCall}` },
+        summary: { hourlyReference: [] },
+        trainingSampleCount: 720,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
 
   await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  await seedBaselineHistory({
+  await seedModelTrainingReadings({
     deviceId: device.id,
-    startDate: "2026-03-16",
+    startDate: "2026-03-03",
     days: 1,
   });
 
   const stats = await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  const baselines = await prisma.deviceBaseline.findMany({
+  const models = await prisma.deviceAnomalyModel.findMany({
     where: {
       deviceId: device.id,
     },
     orderBy: {
-      createdAt: "asc",
+      trainedAt: "asc",
     },
   });
-  const activeBaseline = baselines.find((baseline) => baseline.isActive);
-  const inactiveBaseline = baselines.find((baseline) => !baseline.isActive);
+  const activeModel = models.find((model) => model.isActive);
+  const inactiveModel = models.find((model) => !model.isActive);
 
-  assert.equal(stats.baselineDevicesActivated >= 1, true);
-  assert.equal(baselines.length, 2);
-  assert.ok(activeBaseline);
-  assert.ok(inactiveBaseline);
-  assert.equal(activeBaseline?.sourceEndDate.toISOString().slice(0, 10), "2026-03-16");
-  assert.equal(inactiveBaseline?.sourceEndDate.toISOString().slice(0, 10), "2026-03-15");
-  assert.equal(inactiveBaseline?.supersededAt instanceof Date, true);
+  assert.equal(stats.modelDevicesTrained >= 1, true);
+  assert.equal(models.length, 2);
+  assert.ok(activeModel);
+  assert.ok(inactiveModel);
+  assert.equal(activeModel?.trainedTo.toISOString().slice(0, 10), "2026-03-03");
+  assert.equal(inactiveModel?.trainedTo.toISOString().slice(0, 10), "2026-03-02");
+  assert.equal(inactiveModel?.supersededAt instanceof Date, true);
 });
 
-test("runDeviceUsageAggregationOnce no crea baseline si la ventana cerrada tiene huecos", async () => {
+test("runDeviceUsageAggregationOnce no entrena modelo si la ventana cerrada tiene huecos", async () => {
   const suffix = `${Date.now()}-h`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
   });
 
-  await seedBaselineEligibilityReading(device.id);
-  await seedBaselineHistory({
+  await seedModelTrainingReadings({
     deviceId: device.id,
-    startDate: "2026-03-02",
-    days: 15,
-    missingDayIndexes: [7],
+    startDate: "2026-02-01",
+    days: 30,
+    missingDayIndexes: [12],
   });
 
   const stats = await runDeviceUsageAggregationOnce({
-    enableBaseline: true,
+    enableMl: true,
+    mlTrainingWindowDays: 30,
   });
 
-  const baselines = await prisma.deviceBaseline.findMany({
+  const models = await prisma.deviceAnomalyModel.findMany({
     where: {
       deviceId: device.id,
     },
   });
 
-  assert.equal(stats.baselineDevicesEvaluated >= 1, true);
-  assert.equal(baselines.length, 0);
+  assert.equal(stats.modelDevicesEvaluated >= 1, true);
+  assert.equal(models.length, 0);
 });

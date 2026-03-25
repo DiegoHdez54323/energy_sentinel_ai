@@ -92,6 +92,10 @@ export type ShellyPollingStats = {
   readingsInserted: number;
   readingsDuplicated: number;
   readingsSkipped: number;
+  anomalyPredictionsCreated: number;
+  anomalyModelNotReady: number;
+  anomalyScoreFailures: number;
+  anomalyEventsCreated: number;
 };
 
 export type ShellyRawDeviceEntry = {

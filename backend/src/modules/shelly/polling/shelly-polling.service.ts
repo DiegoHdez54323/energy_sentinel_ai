@@ -43,6 +43,10 @@ export async function runShellyReadingsPollingOnce(options?: {
     readingsInserted: 0,
     readingsDuplicated: 0,
     readingsSkipped: 0,
+    anomalyPredictionsCreated: 0,
+    anomalyModelNotReady: 0,
+    anomalyScoreFailures: 0,
+    anomalyEventsCreated: 0,
   };
 
   let cursorId: string | null = null;
@@ -89,6 +93,10 @@ export async function runShellyReadingsPollingOnce(options?: {
           stats.readingsInserted += result.readingsInserted;
           stats.readingsDuplicated += result.readingsDuplicated;
           stats.readingsSkipped += result.readingsSkipped;
+          stats.anomalyPredictionsCreated += result.anomalyPredictionsCreated;
+          stats.anomalyModelNotReady += result.anomalyModelNotReady;
+          stats.anomalyScoreFailures += result.anomalyScoreFailures;
+          stats.anomalyEventsCreated += result.anomalyEventsCreated;
         } catch {
           stats.integrationsFailed += 1;
         }
