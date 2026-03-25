@@ -33,6 +33,10 @@ export type ShellyPollingDebugIntegrationDump = {
     readingsInserted: number;
     readingsDuplicated: number;
     readingsSkipped: number;
+    anomalyPredictionsCreated: number;
+    anomalyModelNotReady: number;
+    anomalyScoreFailures: number;
+    anomalyEventsCreated: number;
   };
   error?: unknown;
 };

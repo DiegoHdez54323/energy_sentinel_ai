@@ -128,7 +128,9 @@ model Device {
   readings    DeviceReading[]
   hourlyUsage DeviceUsageHourly[]
   dailyUsage  DeviceUsageDaily[]
-  baselines   DeviceBaseline[]
+  anomalyModels DeviceAnomalyModel[]
+  readingFeatures DeviceReadingFeature[]
+  anomalyPredictions DeviceAnomalyPrediction[]
   anomalies   AnomalyEvent[]
 
   @@unique([userId, externalDeviceId], map: "devices_user_external_unique")
@@ -163,6 +165,9 @@ model DeviceReading {
   source String @default("shelly_cloud")
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  features DeviceReadingFeature[]
+  anomalyPredictions DeviceAnomalyPrediction[]
+  anomalies AnomalyEvent[]
 
   @@unique([deviceId, ts], map: "device_readings_device_ts_unique")
   @@index([deviceId, ts])
@@ -205,57 +210,100 @@ model DeviceUsageDaily {
   @@map("device_usage_daily")
 }
 
-model DeviceBaseline {
+model DeviceAnomalyModel {
   id       String @id @default(uuid()) @db.Uuid
   deviceId String @map("device_id") @db.Uuid
 
-  metric       String @default("energy_wh")
-  granularity  String @default("hourly_local")
-  profileShape String @default("weekday_weekend_hour") @map("profile_shape")
-  windowDays   Int    @default(14) @map("window_days")
-  modelVersion String @map("model_version")
-  timezone     String
-  sourceStartDate DateTime @map("source_start_date") @db.Date
-  sourceEndDate   DateTime @map("source_end_date") @db.Date
-  historyDaysUsed Int      @map("history_days_used")
-  minBucketSamples Int     @default(2) @map("min_bucket_samples")
-  params       Json?  @db.JsonB
+  modelType            String   @default("isolation_forest") @map("model_type")
+  modelVersion         String   @map("model_version")
+  featureSchemaVersion String   @map("feature_schema_version")
+  contamination        Float
+  trainingWindowDays   Int      @map("training_window_days")
+  trainedFrom          DateTime @map("trained_from") @db.Date
+  trainedTo            DateTime @map("trained_to") @db.Date
+  trainedAt            DateTime @map("trained_at") @db.Timestamptz(6)
+  trainingSampleCount  Int      @map("training_sample_count")
+  timezone             String
+  artifact             Json     @db.JsonB
   summary      Json?  @db.JsonB
 
   isActive     Boolean   @default(true) @map("is_active")
+  status       String    @default("active")
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   supersededAt DateTime? @map("superseded_at") @db.Timestamptz(6)
 
   device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-  buckets       DeviceBaselineBucket[]
+  predictions   DeviceAnomalyPrediction[]
   anomalyEvents AnomalyEvent[]
 
   @@index([deviceId])
   @@index([deviceId, isActive])
-  @@map("device_baselines")
+  @@map("device_anomaly_models")
 }
 
-model DeviceBaselineBucket {
+model DeviceReadingFeature {
   id         BigInt  @id @default(autoincrement())
-  baselineId String  @map("baseline_id") @db.Uuid
-  dayGroup   String  @map("day_group")
-  localHour  Int     @map("local_hour")
-  sampleCount Int    @map("sample_count")
-  expectedEnergyWh Decimal @map("expected_energy_wh") @db.Decimal(14, 4)
-  lowerBoundEnergyWh Decimal @map("lower_bound_energy_wh") @db.Decimal(14, 4)
-  upperBoundEnergyWh Decimal @map("upper_bound_energy_wh") @db.Decimal(14, 4)
+  readingId   BigInt  @map("reading_id")
+  deviceId    String  @map("device_id") @db.Uuid
+  ts          DateTime @db.Timestamptz(6)
+  localDate   DateTime @map("local_date") @db.Date
 
-  baseline DeviceBaseline @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  featureSchemaVersion String @map("feature_schema_version")
+  timezone             String
+  dayGroup             String  @map("day_group")
+  localHour            Int     @map("local_hour")
+  dayOfWeek            Int     @map("day_of_week")
 
-  @@unique([baselineId, dayGroup, localHour], map: "device_baseline_buckets_baseline_day_hour_unique")
-  @@index([baselineId])
-  @@map("device_baseline_buckets")
+  apower          Float?
+  aenergyDelta    Float?  @map("aenergy_delta")
+  outputNumeric   Float?  @map("output_numeric")
+  hourSin         Float   @map("hour_sin")
+  hourCos         Float   @map("hour_cos")
+  dayOfWeekSin    Float   @map("day_of_week_sin")
+  dayOfWeekCos    Float   @map("day_of_week_cos")
+  deltaPowerPrev  Float?  @map("delta_power_prev")
+  rollingMeanPower5 Float? @map("rolling_mean_power_5")
+  rollingStdPower5  Float? @map("rolling_std_power_5")
+
+  reading DeviceReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
+  device  Device        @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([readingId, featureSchemaVersion], map: "device_reading_features_reading_version_unique")
+  @@index([deviceId, ts])
+  @@index([deviceId, localDate])
+  @@map("device_reading_features")
+}
+
+model DeviceAnomalyPrediction {
+  id        String   @id @default(uuid()) @db.Uuid
+  readingId BigInt   @unique(map: "device_anomaly_predictions_reading_unique") @map("reading_id")
+  deviceId  String   @map("device_id") @db.Uuid
+  modelId   String?  @map("model_id") @db.Uuid
+
+  scoredAt          DateTime @map("scored_at") @db.Timestamptz(6)
+  score             Float?
+  decisionFunction  Float?   @map("decision_function")
+  isAnomaly         Boolean? @map("is_anomaly")
+  status            String
+  details           Json?    @db.JsonB
+
+  reading DeviceReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
+  device  Device        @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  model   DeviceAnomalyModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  anomalyEvent AnomalyEvent?
+
+  @@index([deviceId, scoredAt])
+  @@index([modelId])
+  @@map("device_anomaly_predictions")
 }
 
 model AnomalyEvent {
   id         String  @id @default(uuid()) @db.Uuid
   deviceId   String  @map("device_id") @db.Uuid
-  baselineId String? @map("baseline_id") @db.Uuid
+  modelId    String? @map("model_id") @db.Uuid
+  predictionId String? @unique(map: "anomaly_events_prediction_unique") @map("prediction_id") @db.Uuid
+  readingId  BigInt? @unique(map: "anomaly_events_reading_unique") @map("reading_id")
 
   detectedAt  DateTime @map("detected_at") @db.Timestamptz(6)
   windowStart DateTime @map("window_start") @db.Timestamptz(6)
@@ -271,10 +319,11 @@ model AnomalyEvent {
   details Json? @db.JsonB
 
   device        Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-  baseline      DeviceBaseline?   @relation(fields: [baselineId], references: [id], onDelete: SetNull)
+  model         DeviceAnomalyModel?   @relation(fields: [modelId], references: [id], onDelete: SetNull)
+  prediction    DeviceAnomalyPrediction? @relation(fields: [predictionId], references: [id], onDelete: SetNull)
+  reading       DeviceReading? @relation(fields: [readingId], references: [id], onDelete: SetNull)
   notifications NotificationLog[]
 
-  @@unique([deviceId, anomalyType, windowStart, windowEnd], map: "anomaly_events_device_type_window_unique")
   @@index([deviceId, detectedAt])
   @@map("anomaly_events")
 }

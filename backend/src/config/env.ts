@@ -22,9 +22,12 @@ const envSchema = z.object({
   AGGREGATES_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
   AGGREGATES_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
   AGGREGATES_DEVICE_BATCH_SIZE: z.coerce.number().int().positive().default(100),
-  BASELINE_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
-  BASELINE_WINDOW_DAYS: z.coerce.number().int().positive().default(14),
-  BASELINE_MIN_BUCKET_SAMPLES: z.coerce.number().int().positive().default(2),
+  ML_ENABLED: z.enum(["true", "false", "1", "0"]).optional(),
+  ML_SERVICE_BASE_URL: z.string().url().optional(),
+  ML_SCORE_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  ML_TRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  ML_IF_CONTAMINATION: z.coerce.number().gt(0).lt(0.5).default(0.02),
+  ML_TRAINING_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -46,9 +49,9 @@ const pollingDebugDumps = parsed.data.SHELLY_POLLING_DEBUG_DUMPS
 const aggregatesEnabled = parsed.data.AGGREGATES_ENABLED
   ? ["true", "1"].includes(parsed.data.AGGREGATES_ENABLED)
   : parsed.data.NODE_ENV !== "test";
-const baselineEnabled = parsed.data.BASELINE_ENABLED
-  ? ["true", "1"].includes(parsed.data.BASELINE_ENABLED)
-  : parsed.data.NODE_ENV !== "test";
+const mlEnabled = parsed.data.ML_ENABLED
+  ? ["true", "1"].includes(parsed.data.ML_ENABLED)
+  : false;
 const corsAllowedOrigins = parsed.data.CORS_ORIGIN
   ? parsed.data.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
   : [];
@@ -60,11 +63,18 @@ if (parsed.data.NODE_ENV === "production" && corsAllowedOrigins.length === 0) {
   throw new Error("Invalid environment configuration");
 }
 
+if (mlEnabled && !parsed.data.ML_SERVICE_BASE_URL) {
+  console.error("Invalid environment variables", {
+    ML_SERVICE_BASE_URL: ["ML_SERVICE_BASE_URL is required when ML_ENABLED=true"],
+  });
+  throw new Error("Invalid environment configuration");
+}
+
 export const env = {
   ...parsed.data,
   CORS_ALLOWED_ORIGINS: corsAllowedOrigins,
   SHELLY_POLLING_ENABLED: pollingEnabled,
   SHELLY_POLLING_DEBUG_DUMPS: pollingDebugDumps,
   AGGREGATES_ENABLED: aggregatesEnabled,
-  BASELINE_ENABLED: baselineEnabled,
+  ML_ENABLED: mlEnabled,
 };

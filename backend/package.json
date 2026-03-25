@@ -8,6 +8,8 @@
     "dev:web": "nodemon --watch src --ext ts --exec tsx src/server.ts",
     "build": "tsc && npm run copy:prisma-client",
     "copy:prisma-client": "node scripts/copy-prisma-client.mjs",
+    "ml:train-device": "tsx scripts/ml-train-device.ts",
+    "ml:score-reading": "tsx scripts/ml-score-reading.ts",
     "start": "npm run start:web",
     "start:web": "node dist/src/server.js",
     "job:shelly-polling": "node dist/src/jobs/job-shelly-polling.js",
