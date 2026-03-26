@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "../../src/lib/prisma.js";
 import { runDeviceUsageAggregationOnce } from "../../src/modules/aggregates/aggregates.service.js";
+import { buildFeatureVector } from "../../src/modules/anomaly-detection/feature-engineering.js";
+import type { DeviceReadingForFeatures } from "../../src/modules/anomaly-detection/anomaly-detection.types.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -147,6 +149,82 @@ async function seedModelTrainingReadings(options: {
 
   await prisma.deviceReading.createMany({
     data: readings,
+  });
+}
+
+async function seedTrainingFeaturesForWindow(options: {
+  deviceId: string;
+  startDate: string;
+  endDate: string;
+}) {
+  const contextRows = await prisma.$queryRaw<Array<{
+    id: bigint;
+    deviceId: string;
+    ts: Date;
+    timezone: string;
+    apower: number | null;
+    aenergyDelta: number | null;
+    output: boolean | null;
+  }>>`
+    SELECT
+      dr."id" AS "id",
+      dr."device_id" AS "deviceId",
+      dr."ts" AS "ts",
+      h."timezone" AS "timezone",
+      dr."apower"::double precision AS "apower",
+      dr."aenergy_delta"::double precision AS "aenergyDelta",
+      dr."output" AS "output"
+    FROM "device_readings" dr
+    JOIN "devices" d ON d."id" = dr."device_id"
+    JOIN "homes" h ON h."id" = d."home_id"
+    WHERE dr."device_id" = ${options.deviceId}
+      AND ((dr."ts" AT TIME ZONE h."timezone")::date) < ${options.startDate}::date
+    ORDER BY dr."ts" DESC, dr."id" DESC
+    LIMIT 4
+  `;
+
+  const windowRows = await prisma.$queryRaw<Array<{
+    id: bigint;
+    deviceId: string;
+    ts: Date;
+    timezone: string;
+    apower: number | null;
+    aenergyDelta: number | null;
+    output: boolean | null;
+  }>>`
+    SELECT
+      dr."id" AS "id",
+      dr."device_id" AS "deviceId",
+      dr."ts" AS "ts",
+      h."timezone" AS "timezone",
+      dr."apower"::double precision AS "apower",
+      dr."aenergy_delta"::double precision AS "aenergyDelta",
+      dr."output" AS "output"
+    FROM "device_readings" dr
+    JOIN "devices" d ON d."id" = dr."device_id"
+    JOIN "homes" h ON h."id" = d."home_id"
+    WHERE dr."device_id" = ${options.deviceId}
+      AND ((dr."ts" AT TIME ZONE h."timezone")::date) BETWEEN ${options.startDate}::date AND ${options.endDate}::date
+    ORDER BY dr."ts" ASC, dr."id" ASC
+  `;
+
+  const contextById = new Map<bigint, DeviceReadingForFeatures>();
+  const features = [];
+  for (const reading of [...contextRows.reverse(), ...windowRows]) {
+    const previousReadingsDesc = [...contextById.values()]
+      .filter((candidate) => candidate.deviceId === reading.deviceId && candidate.id !== reading.id)
+      .sort((left, right) => right.ts.getTime() - left.ts.getTime())
+      .slice(0, 4);
+
+    if (windowRows.some((row) => row.id === reading.id)) {
+      features.push(buildFeatureVector(reading, previousReadingsDesc));
+    }
+
+    contextById.set(reading.id, reading);
+  }
+
+  await prisma.deviceReadingFeature.createMany({
+    data: features,
   });
 }
 
@@ -641,4 +719,60 @@ test("runDeviceUsageAggregationOnce no entrena modelo si la ventana cerrada tien
 
   assert.equal(stats.modelDevicesEvaluated >= 1, true);
   assert.equal(models.length, 0);
+});
+
+test("runDeviceUsageAggregationOnce no re-backfillea features cuando la ventana ya esta completa", async () => {
+  const suffix = `${Date.now()}-i`;
+  const { device } = await seedDevice({
+    suffix,
+    timezone: "UTC",
+  });
+
+  await seedModelTrainingReadings({
+    deviceId: device.id,
+    startDate: "2026-02-01",
+    days: 30,
+  });
+  await seedTrainingFeaturesForWindow({
+    deviceId: device.id,
+    startDate: "2026-02-01",
+    endDate: "2026-03-02",
+  });
+
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/train")) {
+      return new Response(JSON.stringify({
+        artifact: { pickleBase64: "trained-model-preseeded-features" },
+        summary: { hourlyReference: [] },
+        trainingSampleCount: 720,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
+
+  const stats = await runDeviceUsageAggregationOnce({
+    enableMl: true,
+    mlTrainingWindowDays: 30,
+  });
+
+  const model = await prisma.deviceAnomalyModel.findFirst({
+    where: {
+      deviceId: device.id,
+      isActive: true,
+    },
+  });
+  const featuresCount = await prisma.deviceReadingFeature.count({
+    where: {
+      deviceId: device.id,
+    },
+  });
+
+  assert.equal(stats.modelDevicesTrained >= 1, true);
+  assert.equal(stats.featureRowsUpserted, 0);
+  assert.equal(featuresCount, 720);
+  assert.ok(model);
 });
