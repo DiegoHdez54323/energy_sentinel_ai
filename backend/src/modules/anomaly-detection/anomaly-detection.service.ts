@@ -6,6 +6,7 @@ import {
   getDeviceTimezone,
   getActiveDeviceModel,
   getReadingForScoring,
+  listMissingTrainingWindowReadings,
   listPreviousReadingsForDevice,
   listReadingsBeforeLocalDate,
   listRecentClosedDailyDates,
@@ -332,6 +333,22 @@ async function backfillTrainingFeatures(
   startDate: string,
   endDate: string,
 ): Promise<number> {
+  const missingReadingsStartedAt = Date.now();
+  const missingWindowRows = await listMissingTrainingWindowReadings({
+    deviceId,
+    startDate,
+    endDate,
+  });
+  logTrainingStage(deviceId, "features:missing-readings-loaded", {
+    missingRowsCount: missingWindowRows.length,
+    durationMs: Date.now() - missingReadingsStartedAt,
+  });
+
+  if (missingWindowRows.length === 0) {
+    logTrainingStage(deviceId, "features:backfill-skipped-window-complete");
+    return 0;
+  }
+
   const contextStartedAt = Date.now();
   const contextRowsDesc = await listReadingsBeforeLocalDate({
     deviceId,
@@ -343,7 +360,7 @@ async function backfillTrainingFeatures(
     durationMs: Date.now() - contextStartedAt,
   });
 
-  const readingsStartedAt = Date.now();
+  const windowReadingsStartedAt = Date.now();
   const windowRows = await listTrainingWindowReadings({
     deviceId,
     startDate,
@@ -351,9 +368,10 @@ async function backfillTrainingFeatures(
   });
   logTrainingStage(deviceId, "features:window-readings-loaded", {
     windowRowsCount: windowRows.length,
-    durationMs: Date.now() - readingsStartedAt,
+    durationMs: Date.now() - windowReadingsStartedAt,
   });
 
+  const missingReadingIds = new Set(missingWindowRows.map((reading) => reading.id));
   const contextById = new Map<bigint, DeviceReadingForFeatures>();
   const combinedRows = [...contextRowsDesc.reverse(), ...windowRows];
   const featuresToInsert: DeviceReadingFeatureVector[] = [];
@@ -365,8 +383,8 @@ async function backfillTrainingFeatures(
       .sort((left, right) => right.ts.getTime() - left.ts.getTime())
       .slice(0, FEATURE_ROLLING_WINDOW_SIZE - 1);
 
-    const feature = buildFeatureVector(reading, previousReadingsDesc);
-    if (feature.localDate.toISOString().slice(0, 10) >= startDate) {
+    if (missingReadingIds.has(reading.id)) {
+      const feature = buildFeatureVector(reading, previousReadingsDesc);
       featuresToInsert.push(feature);
     }
 

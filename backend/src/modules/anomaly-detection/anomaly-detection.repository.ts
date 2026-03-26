@@ -137,12 +137,19 @@ export async function createManyReadingFeatures(features: DeviceReadingFeatureVe
     return 0;
   }
 
-  const result = await prisma.deviceReadingFeature.createMany({
-    data: features,
-    skipDuplicates: true,
-  });
+  const CHUNK_SIZE = 500;
+  let insertedCount = 0;
 
-  return result.count;
+  for (let index = 0; index < features.length; index += CHUNK_SIZE) {
+    const chunk = features.slice(index, index + CHUNK_SIZE);
+    const result = await prisma.deviceReadingFeature.createMany({
+      data: chunk,
+      skipDuplicates: true,
+    });
+    insertedCount += result.count;
+  }
+
+  return insertedCount;
 }
 
 export async function listTrainingWindowReadings(options: {
@@ -172,6 +179,45 @@ export async function listTrainingWindowReadings(options: {
     JOIN "homes" h ON h."id" = d."home_id"
     WHERE dr."device_id" = ${options.deviceId}
       AND ((dr."ts" AT TIME ZONE h."timezone")::date) BETWEEN ${options.startDate}::date AND ${options.endDate}::date
+    ORDER BY dr."ts" ASC, dr."id" ASC
+  `;
+
+  return rows;
+}
+
+export async function listMissingTrainingWindowReadings(options: {
+  deviceId: string;
+  startDate: string;
+  endDate: string;
+}): Promise<DeviceReadingForFeatures[]> {
+  const rows = await prisma.$queryRaw<Array<{
+    id: bigint;
+    deviceId: string;
+    ts: Date;
+    timezone: string;
+    apower: number | null;
+    aenergyDelta: number | null;
+    output: boolean | null;
+  }>>`
+    SELECT
+      dr."id" AS "id",
+      dr."device_id" AS "deviceId",
+      dr."ts" AS "ts",
+      h."timezone" AS "timezone",
+      dr."apower"::double precision AS "apower",
+      dr."aenergy_delta"::double precision AS "aenergyDelta",
+      dr."output" AS "output"
+    FROM "device_readings" dr
+    JOIN "devices" d ON d."id" = dr."device_id"
+    JOIN "homes" h ON h."id" = d."home_id"
+    WHERE dr."device_id" = ${options.deviceId}
+      AND ((dr."ts" AT TIME ZONE h."timezone")::date) BETWEEN ${options.startDate}::date AND ${options.endDate}::date
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "device_reading_features" drf
+        WHERE drf."reading_id" = dr."id"
+          AND drf."feature_schema_version" = ${ANOMALY_FEATURE_SCHEMA_VERSION}
+      )
     ORDER BY dr."ts" ASC, dr."id" ASC
   `;
 
