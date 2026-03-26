@@ -39,6 +39,7 @@ export async function trainDeviceAnomalyModel(
     mlServiceBaseUrl?: string;
   },
 ): Promise<DeviceModelTrainingResult> {
+  const startedAt = Date.now();
   const enabled = options?.enabled ?? env.ML_ENABLED;
   if (!enabled) {
     return {
@@ -50,8 +51,14 @@ export async function trainDeviceAnomalyModel(
 
   const trainingWindowDays = Math.max(1, options?.trainingWindowDays ?? env.ML_TRAINING_WINDOW_DAYS);
   const contamination = options?.contamination ?? env.ML_IF_CONTAMINATION;
+  logTrainingStage(deviceId, "start", {
+    trainingWindowDays,
+    contamination,
+  });
+
   const timezone = await getDeviceTimezone(deviceId);
   if (!timezone) {
+    logTrainingStage(deviceId, "skip:no-timezone");
     return {
       status: "insufficient_history",
       featureRowsUpserted: 0,
@@ -60,7 +67,13 @@ export async function trainDeviceAnomalyModel(
   }
   const dailyDates = await listRecentClosedDailyDates(deviceId, trainingWindowDays);
   const windowBounds = getContiguousWindowBounds(dailyDates, trainingWindowDays);
+  logTrainingStage(deviceId, "window:checked", {
+    closedDaysFound: dailyDates.length,
+    windowStartDate: windowBounds?.startDate ?? null,
+    windowEndDate: windowBounds?.endDate ?? null,
+  });
   if (!windowBounds) {
+    logTrainingStage(deviceId, "skip:insufficient-history");
     return {
       status: "insufficient_history",
       featureRowsUpserted: 0,
@@ -77,6 +90,9 @@ export async function trainDeviceAnomalyModel(
     && Math.abs(activeModel.contamination - contamination) < 0.000001
     && activeModel.trainedTo.toISOString().slice(0, 10) === windowBounds.endDate
   ) {
+    logTrainingStage(deviceId, "skip:up-to-date", {
+      trainedTo: activeModel.trainedTo.toISOString().slice(0, 10),
+    });
     return {
       status: "up_to_date",
       featureRowsUpserted: 0,
@@ -84,14 +100,26 @@ export async function trainDeviceAnomalyModel(
     };
   }
 
+  const backfillStartedAt = Date.now();
   const featureRowsUpserted = await backfillTrainingFeatures(deviceId, windowBounds.startDate, windowBounds.endDate);
+  logTrainingStage(deviceId, "features:backfill-complete", {
+    featureRowsUpserted,
+    durationMs: Date.now() - backfillStartedAt,
+  });
+
+  const readFeaturesStartedAt = Date.now();
   const trainingFeatures = await listTrainingFeatureRows({
     deviceId,
     startDate: localDateStringToDate(windowBounds.startDate),
     endDate: localDateStringToDate(windowBounds.endDate),
   });
+  logTrainingStage(deviceId, "features:loaded", {
+    trainingFeaturesCount: trainingFeatures.length,
+    durationMs: Date.now() - readFeaturesStartedAt,
+  });
 
   if (trainingFeatures.length === 0) {
+    logTrainingStage(deviceId, "skip:no-training-rows");
     return {
       status: "no_training_rows",
       featureRowsUpserted,
@@ -100,6 +128,7 @@ export async function trainDeviceAnomalyModel(
   }
 
   const trainedAt = new Date();
+  const trainRequestStartedAt = Date.now();
   const trainingResponse = await trainIsolationForestModel({
     deviceId,
     modelType: ANOMALY_MODEL_TYPE,
@@ -127,7 +156,12 @@ export async function trainDeviceAnomalyModel(
     enabled,
     baseUrl: options?.mlServiceBaseUrl,
   });
+  logTrainingStage(deviceId, "ml-service:train-complete", {
+    trainingSampleCount: trainingResponse.trainingSampleCount,
+    durationMs: Date.now() - trainRequestStartedAt,
+  });
 
+  const persistStartedAt = Date.now();
   const modelId = await replaceActiveDeviceModel({
     deviceId,
     contamination,
@@ -139,6 +173,17 @@ export async function trainDeviceAnomalyModel(
     timezone,
     artifact: trainingResponse.artifact,
     summary: trainingResponse.summary,
+  });
+  logTrainingStage(deviceId, "persist:model-complete", {
+    modelId,
+    durationMs: Date.now() - persistStartedAt,
+  });
+
+  logTrainingStage(deviceId, "done", {
+    modelId,
+    trainingSampleCount: trainingResponse.trainingSampleCount,
+    featureRowsUpserted,
+    totalDurationMs: Date.now() - startedAt,
   });
 
   return {
@@ -287,21 +332,33 @@ async function backfillTrainingFeatures(
   startDate: string,
   endDate: string,
 ): Promise<number> {
+  const contextStartedAt = Date.now();
   const contextRowsDesc = await listReadingsBeforeLocalDate({
     deviceId,
     localDate: startDate,
     limit: FEATURE_ROLLING_WINDOW_SIZE - 1,
   });
+  logTrainingStage(deviceId, "features:context-loaded", {
+    contextRowsCount: contextRowsDesc.length,
+    durationMs: Date.now() - contextStartedAt,
+  });
+
+  const readingsStartedAt = Date.now();
   const windowRows = await listTrainingWindowReadings({
     deviceId,
     startDate,
     endDate,
+  });
+  logTrainingStage(deviceId, "features:window-readings-loaded", {
+    windowRowsCount: windowRows.length,
+    durationMs: Date.now() - readingsStartedAt,
   });
 
   const contextById = new Map<bigint, DeviceReadingForFeatures>();
   const combinedRows = [...contextRowsDesc.reverse(), ...windowRows];
   const featuresToInsert: DeviceReadingFeatureVector[] = [];
 
+  const buildStartedAt = Date.now();
   for (const reading of combinedRows) {
     const previousReadingsDesc = [...contextById.values()]
       .filter((candidate) => candidate.deviceId === reading.deviceId && candidate.id !== reading.id)
@@ -315,8 +372,20 @@ async function backfillTrainingFeatures(
 
     contextById.set(reading.id, reading);
   }
+  logTrainingStage(deviceId, "features:built", {
+    featuresToInsertCount: featuresToInsert.length,
+    durationMs: Date.now() - buildStartedAt,
+  });
 
-  return createManyReadingFeatures(featuresToInsert);
+  const insertStartedAt = Date.now();
+  const insertedCount = await createManyReadingFeatures(featuresToInsert);
+  logTrainingStage(deviceId, "features:inserted", {
+    insertedCount,
+    attemptedCount: featuresToInsert.length,
+    durationMs: Date.now() - insertStartedAt,
+  });
+
+  return insertedCount;
 }
 
 function getContiguousWindowBounds(
@@ -379,4 +448,13 @@ function getExpectedValueFromSummary(
   }) as { expectedApower?: unknown } | undefined;
 
   return typeof match?.expectedApower === "number" ? match.expectedApower : null;
+}
+
+function logTrainingStage(
+  deviceId: string,
+  stage: string,
+  details?: Record<string, unknown>,
+) {
+  const serializedDetails = details ? ` ${JSON.stringify(details)}` : "";
+  console.log(`[AnomalyTraining] device=${deviceId} stage=${stage}${serializedDetails}`);
 }
