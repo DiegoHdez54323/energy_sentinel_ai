@@ -94,6 +94,12 @@ backend/src/
       devices.routes.ts
       devices.schemas.ts
       devices.service.ts
+    consumption/
+      consumption.controller.ts
+      consumption.repository.ts
+      consumption.routes.ts
+      consumption.schemas.ts
+      consumption.service.ts
     aggregates/
       aggregates.service.ts
       usage-aggregation.repository.ts
@@ -293,7 +299,36 @@ Responsabilidades:
 - normalizar payloads discovery y readings
 - encapsular helpers repetidos de Prisma sobre la integración Shelly
 
-### 5.5 `aggregates`
+### 5.5 `consumption`
+
+Responsabilidades:
+
+- exponer series temporales consumibles por frontend
+- devolver consumo por device
+- devolver consumo total por home
+- resolver granularidad automática por rango
+- reutilizar `device_readings`, `device_usage_hourly` y `device_usage_daily` sin exponer tablas internas
+
+Reglas actuales:
+
+- `GET /devices/:deviceId/consumption` usa ownership por device
+- `GET /homes/:homeId/consumption` usa ownership por home
+- `granularity=auto` resuelve:
+  - `raw` para ventanas `<= 6h`
+  - `hourly` para ventanas `> 6h` y `<= 14d`
+  - `daily` para ventanas `> 14d`
+- `granularity=raw` solo se acepta para ventanas `<= 24h`
+- el rango máximo expuesto en v1 es `90d`
+- la respuesta siempre devuelve un `series[]` homogéneo con:
+  - `ts`
+  - `energyWh`
+  - `avgPowerW`
+  - `maxPowerW`
+  - `minPowerW`
+  - `samplesCount`
+- el total por home suma todos los devices del home por bucket temporal
+
+### 5.6 `aggregates`
 
 Responsabilidades:
 
@@ -334,6 +369,7 @@ Routers montados:
 - `/auth`
 - `/integrations/shelly`
 - `/homes`
+- `/` para `consumption`
 - `/` para `devices`
 
 ## 7. Endpoints actuales
@@ -677,6 +713,136 @@ Protección adicional:
 - ownership por `requireOwnedHomeParam("id")`
 
 ### 7.4 Devices
+
+### 7.4 Consumo
+
+#### `GET /devices/:deviceId/consumption`
+
+Propósito:
+
+- devolver serie temporal de consumo para un device
+
+Auth:
+
+- requiere access token del backend
+- requiere ownership del device
+
+Query params:
+
+- `from`: ISO datetime
+- `to`: ISO datetime
+- `granularity`: `auto | raw | hourly | daily` opcional, default `auto`
+
+Ejemplo:
+
+```http
+GET /devices/6def05af-9021-49fc-babe-d6972e668766/consumption?from=2026-03-25T00:00:00.000Z&to=2026-03-25T05:59:59.999Z
+```
+
+Ejemplo de respuesta:
+
+```json
+{
+  "device": {
+    "id": "6def05af-9021-49fc-babe-d6972e668766",
+    "homeId": "c64532b2-7c53-4f6f-bc92-9ec77fc6639b",
+    "userId": "ab5d7cbb-6c5b-4c2f-8dc0-49da2f4e4f37",
+    "vendor": "shelly",
+    "deviceCode": null,
+    "displayName": "device-raw",
+    "ipAddress": null,
+    "macAddress": null,
+    "externalDeviceId": "ext-raw-1",
+    "status": "active",
+    "lastSeenAt": null,
+    "dataSource": "shelly_cloud",
+    "createdAt": "2026-03-25T00:00:00.000Z",
+    "updatedAt": "2026-03-25T00:00:00.000Z"
+  },
+  "range": {
+    "from": "2026-03-25T00:00:00.000Z",
+    "to": "2026-03-25T05:59:59.999Z"
+  },
+  "granularityRequested": "auto",
+  "granularityResolved": "raw",
+  "timezone": "Etc/UTC",
+  "series": [
+    {
+      "ts": "2026-03-25T00:10:00.000Z",
+      "energyWh": 1.5,
+      "avgPowerW": 50,
+      "maxPowerW": 50,
+      "minPowerW": 50,
+      "samplesCount": 1
+    }
+  ]
+}
+```
+
+#### `GET /homes/:homeId/consumption`
+
+Propósito:
+
+- devolver serie temporal de consumo total del home sumando todos sus devices
+
+Auth:
+
+- requiere access token del backend
+- requiere ownership del home
+
+Query params:
+
+- `from`: ISO datetime
+- `to`: ISO datetime
+- `granularity`: `auto | raw | hourly | daily` opcional, default `auto`
+
+Ejemplo:
+
+```http
+GET /homes/93840b75-9632-49d4-8f39-b892620eef73/consumption?from=2026-03-24T00:00:00.000Z&to=2026-03-25T00:00:00.000Z&granularity=hourly
+```
+
+Ejemplo de respuesta:
+
+```json
+{
+  "home": {
+    "id": "93840b75-9632-49d4-8f39-b892620eef73",
+    "userId": "ab5d7cbb-6c5b-4c2f-8dc0-49da2f4e4f37",
+    "name": "my-home",
+    "timezone": "Etc/UTC",
+    "createdAt": "2026-03-25T00:00:00.000Z",
+    "updatedAt": "2026-03-25T00:00:00.000Z"
+  },
+  "range": {
+    "from": "2026-03-24T00:00:00.000Z",
+    "to": "2026-03-25T00:00:00.000Z"
+  },
+  "granularityRequested": "hourly",
+  "granularityResolved": "hourly",
+  "timezone": "Etc/UTC",
+  "series": [
+    {
+      "ts": "2026-03-24T00:00:00.000Z",
+      "energyWh": 30,
+      "avgPowerW": 66.66666666666667,
+      "maxPowerW": 120,
+      "minPowerW": 40,
+      "samplesCount": 3
+    }
+  ]
+}
+```
+
+Errores relevantes v1:
+
+- `400 INVALID_QUERY`
+- `400 INVALID_RANGE`
+- `400 INVALID_GRANULARITY_FOR_RANGE`
+- `404 DEVICE_NOT_FOUND`
+- `404 HOME_NOT_FOUND`
+
+### 7.5 Devices
 
 #### `POST /homes/:homeId/devices`
 

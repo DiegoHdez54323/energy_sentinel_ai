@@ -4,6 +4,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import { env } from "../config/env.js";
 import { authRouter } from "../modules/auth/auth.routes.js";
+import { consumptionRouter } from "../modules/consumption/consumption.routes.js";
 import { devicesRouter } from "../modules/devices/devices.routes.js";
 import { homesRouter } from "../modules/homes/homes.routes.js";
 import { shellyRouter } from "../modules/shelly/shelly.routes.js";
@@ -35,6 +36,7 @@ export function createApp() {
   app.use("/auth", authRouter);
   app.use("/integrations/shelly", shellyRouter);
   app.use("/homes", homesRouter);
+  app.use("/", consumptionRouter);
   app.use("/", devicesRouter);
 
   return app;
