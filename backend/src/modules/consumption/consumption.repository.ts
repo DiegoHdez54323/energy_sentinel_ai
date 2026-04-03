@@ -107,31 +107,6 @@ export async function listDeviceDailyConsumption(options: {
   return normalizeRows(rows);
 }
 
-export async function listHomeRawConsumption(options: {
-  homeId: string;
-  from: Date;
-  to: Date;
-}) {
-  const rows = await prisma.$queryRaw<ConsumptionSeriesRow[]>`
-    SELECT
-      dr."ts" AS "ts",
-      COALESCE(SUM(COALESCE(dr."aenergy_delta", 0)), 0)::double precision AS "energyWh",
-      AVG(dr."apower")::double precision AS "avgPowerW",
-      MAX(dr."apower")::double precision AS "maxPowerW",
-      MIN(dr."apower")::double precision AS "minPowerW",
-      COUNT(*)::int AS "samplesCount"
-    FROM "device_readings" dr
-    JOIN "devices" d ON d."id" = dr."device_id"
-    WHERE d."home_id" = ${options.homeId}
-      AND dr."ts" >= ${options.from}
-      AND dr."ts" < ${options.to}
-    GROUP BY dr."ts"
-    ORDER BY dr."ts" ASC
-  `;
-
-  return normalizeRows(rows);
-}
-
 export async function listHomeHourlyConsumption(options: {
   homeId: string;
   from: Date;

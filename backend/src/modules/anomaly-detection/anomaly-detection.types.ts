@@ -69,3 +69,28 @@ export type DeviceModelTrainingResult =
 export type DeviceReadingScoringResult =
   | { status: "disabled" | "duplicate" | "model_not_ready"; predictionCreated: boolean; anomalyCreated: boolean }
   | { status: "scored" | "score_failed"; predictionCreated: boolean; anomalyCreated: boolean };
+
+export type DeviceAnomalyIncidentStatus = "open" | "closed";
+
+export type DeviceAnomalyIncidentSummary = {
+  id: string;
+  status: DeviceAnomalyIncidentStatus;
+  detectedAt: string;
+  windowStart: string;
+  windowEnd: string;
+  readingsCount: number;
+  severity: number;
+  score: number | null;
+  expectedValue: number | null;
+  observedValue: number | null;
+  details: Prisma.JsonValue | null;
+};
+
+export type DeviceLatestReadingSummary = {
+  ts: string;
+  apower: number | null;
+  aenergyDelta: number | null;
+  voltage: number | null;
+  current: number | null;
+  output: boolean | null;
+};

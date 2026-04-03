@@ -280,6 +280,7 @@ model DeviceAnomalyPrediction {
   readingId BigInt   @unique(map: "device_anomaly_predictions_reading_unique") @map("reading_id")
   deviceId  String   @map("device_id") @db.Uuid
   modelId   String?  @map("model_id") @db.Uuid
+  anomalyEventId String? @map("anomaly_event_id") @db.Uuid
 
   scoredAt          DateTime @map("scored_at") @db.Timestamptz(6)
   score             Float?
@@ -291,10 +292,11 @@ model DeviceAnomalyPrediction {
   reading DeviceReading @relation(fields: [readingId], references: [id], onDelete: Cascade)
   device  Device        @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   model   DeviceAnomalyModel? @relation(fields: [modelId], references: [id], onDelete: SetNull)
-  anomalyEvent AnomalyEvent?
+  anomalyEvent AnomalyEvent? @relation(fields: [anomalyEventId], references: [id], onDelete: SetNull)
 
   @@index([deviceId, scoredAt])
   @@index([modelId])
+  @@index([anomalyEventId])
   @@map("device_anomaly_predictions")
 }
 
@@ -304,6 +306,8 @@ model AnomalyEvent {
   modelId    String? @map("model_id") @db.Uuid
   predictionId String? @unique(map: "anomaly_events_prediction_unique") @map("prediction_id") @db.Uuid
   readingId  BigInt? @unique(map: "anomaly_events_reading_unique") @map("reading_id")
+  status     String  @default("open")
+  readingsCount Int  @default(1) @map("readings_count")
 
   detectedAt  DateTime @map("detected_at") @db.Timestamptz(6)
   windowStart DateTime @map("window_start") @db.Timestamptz(6)
@@ -320,11 +324,12 @@ model AnomalyEvent {
 
   device        Device            @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   model         DeviceAnomalyModel?   @relation(fields: [modelId], references: [id], onDelete: SetNull)
-  prediction    DeviceAnomalyPrediction? @relation(fields: [predictionId], references: [id], onDelete: SetNull)
   reading       DeviceReading? @relation(fields: [readingId], references: [id], onDelete: SetNull)
+  predictions   DeviceAnomalyPrediction[]
   notifications NotificationLog[]
 
   @@index([deviceId, detectedAt])
+  @@index([deviceId, status, detectedAt])
   @@map("anomaly_events")
 }
 

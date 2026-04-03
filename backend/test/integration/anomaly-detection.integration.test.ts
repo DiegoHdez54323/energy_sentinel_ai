@@ -84,6 +84,20 @@ async function seedReading(options: {
   });
 }
 
+async function getPredictionAndIncident(readingId: bigint) {
+  const prediction = await prisma.deviceAnomalyPrediction.findUnique({
+    where: { readingId },
+  });
+
+  const incident = prediction?.anomalyEventId
+    ? await prisma.anomalyEvent.findUnique({
+      where: { id: prediction.anomalyEventId },
+    })
+    : null;
+
+  return { prediction, incident };
+}
+
 test.afterEach(async () => {
   globalThis.fetch = originalFetch;
 });
@@ -118,7 +132,7 @@ test("scoreDeviceReading crea prediccion model_not_ready cuando no existe modelo
     where: { readingId: reading.id },
   });
   const event = await prisma.anomalyEvent.findFirst({
-    where: { readingId: reading.id },
+    where: { deviceId: device.id },
   });
 
   assert.equal(result.status, "model_not_ready");
@@ -128,7 +142,7 @@ test("scoreDeviceReading crea prediccion model_not_ready cuando no existe modelo
   assert.equal(event, null);
 });
 
-test("scoreDeviceReading crea prediccion y anomaly_event cuando el score marca anomalia", async () => {
+test("scoreDeviceReading crea incidente abierto cuando el score marca anomalia", async () => {
   const suffix = `${Date.now()}-b`;
   const { device } = await seedDevice({
     suffix,
@@ -172,43 +186,61 @@ test("scoreDeviceReading crea prediccion y anomaly_event cuando el score marca a
     mlServiceBaseUrl: "http://ml-service.local",
   });
 
-  const prediction = await prisma.deviceAnomalyPrediction.findUnique({
-    where: { readingId: reading.id },
-  });
-  const event = await prisma.anomalyEvent.findFirst({
-    where: { readingId: reading.id },
-  });
+  const { prediction, incident } = await getPredictionAndIncident(reading.id);
 
   assert.equal(result.status, "scored");
   assert.equal(result.anomalyCreated, true);
   assert.ok(prediction);
   assert.equal(prediction?.status, "scored");
   assert.equal(prediction?.isAnomaly, true);
-  assert.ok(event);
-  assert.equal(Number(event?.expectedValue?.toString()), 50);
-  assert.equal(Number(event?.observedValue?.toString()), 0);
+  assert.ok(prediction?.anomalyEventId);
+  assert.ok(incident);
+  assert.equal(incident?.status, "open");
+  assert.equal(incident?.readingsCount, 1);
+  assert.equal(incident?.windowStart.toISOString(), "2026-03-23T17:00:00.000Z");
+  assert.equal(incident?.windowEnd.toISOString(), "2026-03-23T17:00:00.000Z");
+  assert.equal(Number(incident?.expectedValue?.toString()), 50);
+  assert.equal(Number(incident?.observedValue?.toString()), 0);
 });
 
-test("scoreDeviceReading crea solo prediccion cuando el modelo no marca anomalia", async () => {
+test("scoreDeviceReading agrupa anomalias cercanas en un mismo incidente", async () => {
   const suffix = `${Date.now()}-c`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
   });
-  await seedModel(device.id);
-  const reading = await seedReading({
+  await seedModel(device.id, {
+    hourlyReference: [
+      { dayGroup: "weekday", localHour: 17, expectedApower: 50 },
+    ],
+  });
+  await seedReading({
     deviceId: device.id,
-    ts: "2026-03-24T18:00:00.000Z",
-    apower: 52,
+    ts: "2026-03-23T16:55:00.000Z",
+    apower: 48,
     aenergyDelta: 5,
   });
+  const firstReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:00:00.000Z",
+    apower: 0,
+    aenergyDelta: 1,
+  });
+  const secondReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:03:00.000Z",
+    apower: 2,
+    aenergyDelta: 1,
+  });
 
+  let scoreCallIndex = 0;
   globalThis.fetch = (async (input) => {
     if (String(input).includes("/score")) {
+      scoreCallIndex += 1;
       return new Response(JSON.stringify({
-        score: 0.12,
-        isAnomaly: false,
-        decisionFunction: 0.3,
+        score: scoreCallIndex === 1 ? -0.84 : -0.91,
+        isAnomaly: true,
+        decisionFunction: -0.42,
       }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -218,27 +250,168 @@ test("scoreDeviceReading crea solo prediccion cuando el modelo no marca anomalia
     throw new Error(`Unexpected fetch URL: ${String(input)}`);
   }) as typeof fetch;
 
-  const result = await scoreDeviceReading(reading.id, {
+  const firstResult = await scoreDeviceReading(firstReading.id, {
+    enabled: true,
+    mlServiceBaseUrl: "http://ml-service.local",
+  });
+  const secondResult = await scoreDeviceReading(secondReading.id, {
     enabled: true,
     mlServiceBaseUrl: "http://ml-service.local",
   });
 
-  const prediction = await prisma.deviceAnomalyPrediction.findUnique({
-    where: { readingId: reading.id },
+  const firstPrediction = await prisma.deviceAnomalyPrediction.findUnique({
+    where: { readingId: firstReading.id },
   });
-  const event = await prisma.anomalyEvent.findFirst({
-    where: { readingId: reading.id },
+  const secondPrediction = await prisma.deviceAnomalyPrediction.findUnique({
+    where: { readingId: secondReading.id },
+  });
+  const incidents = await prisma.anomalyEvent.findMany({
+    where: { deviceId: device.id },
+    orderBy: { detectedAt: "asc" },
   });
 
-  assert.equal(result.status, "scored");
-  assert.equal(result.anomalyCreated, false);
-  assert.ok(prediction);
-  assert.equal(prediction?.isAnomaly, false);
-  assert.equal(event, null);
+  assert.equal(firstResult.anomalyCreated, true);
+  assert.equal(secondResult.anomalyCreated, false);
+  assert.equal(incidents.length, 1);
+  assert.equal(firstPrediction?.anomalyEventId, secondPrediction?.anomalyEventId);
+  assert.equal(incidents[0]?.status, "open");
+  assert.equal(incidents[0]?.readingsCount, 2);
+  assert.equal(incidents[0]?.windowStart.toISOString(), "2026-03-23T17:00:00.000Z");
+  assert.equal(incidents[0]?.windowEnd.toISOString(), "2026-03-23T17:03:00.000Z");
+});
+
+test("scoreDeviceReading cierra incidente abierto cuando entra una lectura normal", async () => {
+  const suffix = `${Date.now()}-d`;
+  const { device } = await seedDevice({
+    suffix,
+    timezone: "UTC",
+  });
+  await seedModel(device.id, {
+    hourlyReference: [
+      { dayGroup: "weekday", localHour: 17, expectedApower: 50 },
+    ],
+  });
+  await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T16:55:00.000Z",
+    apower: 48,
+    aenergyDelta: 5,
+  });
+  const anomalyReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:00:00.000Z",
+    apower: 0,
+    aenergyDelta: 1,
+  });
+  const normalReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:04:00.000Z",
+    apower: 52,
+    aenergyDelta: 2,
+  });
+
+  let scoreCallIndex = 0;
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/score")) {
+      scoreCallIndex += 1;
+      return new Response(JSON.stringify({
+        score: scoreCallIndex === 1 ? -0.84 : 0.12,
+        isAnomaly: scoreCallIndex === 1,
+        decisionFunction: scoreCallIndex === 1 ? -0.42 : 0.3,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
+
+  await scoreDeviceReading(anomalyReading.id, {
+    enabled: true,
+    mlServiceBaseUrl: "http://ml-service.local",
+  });
+  const normalResult = await scoreDeviceReading(normalReading.id, {
+    enabled: true,
+    mlServiceBaseUrl: "http://ml-service.local",
+  });
+
+  const incidents = await prisma.anomalyEvent.findMany({
+    where: { deviceId: device.id },
+  });
+
+  assert.equal(normalResult.anomalyCreated, false);
+  assert.equal(incidents.length, 1);
+  assert.equal(incidents[0]?.status, "closed");
+});
+
+test("scoreDeviceReading abre un incidente nuevo si la siguiente anomalia rompe el gap", async () => {
+  const suffix = `${Date.now()}-e`;
+  const { device } = await seedDevice({
+    suffix,
+    timezone: "UTC",
+  });
+  await seedModel(device.id, {
+    hourlyReference: [
+      { dayGroup: "weekday", localHour: 17, expectedApower: 50 },
+    ],
+  });
+  await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T16:55:00.000Z",
+    apower: 48,
+    aenergyDelta: 5,
+  });
+  const firstReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:00:00.000Z",
+    apower: 0,
+    aenergyDelta: 1,
+  });
+  const secondReading = await seedReading({
+    deviceId: device.id,
+    ts: "2026-03-23T17:08:00.000Z",
+    apower: 1,
+    aenergyDelta: 1,
+  });
+
+  globalThis.fetch = (async (input) => {
+    if (String(input).includes("/score")) {
+      return new Response(JSON.stringify({
+        score: -0.84,
+        isAnomaly: true,
+        decisionFunction: -0.42,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected fetch URL: ${String(input)}`);
+  }) as typeof fetch;
+
+  await scoreDeviceReading(firstReading.id, {
+    enabled: true,
+    mlServiceBaseUrl: "http://ml-service.local",
+  });
+  const secondResult = await scoreDeviceReading(secondReading.id, {
+    enabled: true,
+    mlServiceBaseUrl: "http://ml-service.local",
+  });
+
+  const incidents = await prisma.anomalyEvent.findMany({
+    where: { deviceId: device.id },
+    orderBy: { detectedAt: "asc" },
+  });
+
+  assert.equal(secondResult.anomalyCreated, true);
+  assert.equal(incidents.length, 2);
+  assert.equal(incidents[0]?.status, "closed");
+  assert.equal(incidents[1]?.status, "open");
 });
 
 test("scoreDeviceReading persiste score_failed si el servicio ML falla", async () => {
-  const suffix = `${Date.now()}-d`;
+  const suffix = `${Date.now()}-f`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
@@ -273,7 +446,7 @@ test("scoreDeviceReading persiste score_failed si el servicio ML falla", async (
     where: { readingId: reading.id },
   });
   const event = await prisma.anomalyEvent.findFirst({
-    where: { readingId: reading.id },
+    where: { deviceId: device.id },
   });
 
   assert.equal(result.status, "score_failed");
@@ -282,8 +455,8 @@ test("scoreDeviceReading persiste score_failed si el servicio ML falla", async (
   assert.equal(event, null);
 });
 
-test("scoreDeviceReading es idempotente para la misma lectura y no duplica prediction ni anomaly_event", async () => {
-  const suffix = `${Date.now()}-e`;
+test("scoreDeviceReading es idempotente para la misma lectura y no duplica ni reextiende el incidente", async () => {
+  const suffix = `${Date.now()}-g`;
   const { device } = await seedDevice({
     suffix,
     timezone: "UTC",
@@ -335,15 +508,14 @@ test("scoreDeviceReading es idempotente para la misma lectura y no duplica predi
   const predictions = await prisma.deviceAnomalyPrediction.findMany({
     where: { readingId: reading.id },
   });
-  const events = await prisma.anomalyEvent.findMany({
-    where: { readingId: reading.id },
+  const incidents = await prisma.anomalyEvent.findMany({
+    where: { deviceId: device.id },
   });
 
   assert.equal(firstResult.status, "scored");
   assert.equal(secondResult.status, "scored");
   assert.equal(scoreCalls, 2);
   assert.equal(predictions.length, 1);
-  assert.equal(events.length, 1);
-  assert.equal(predictions[0]?.isAnomaly, true);
-  assert.equal(Number(events[0]?.expectedValue?.toString()), 50);
+  assert.equal(incidents.length, 1);
+  assert.equal(incidents[0]?.readingsCount, 1);
 });
