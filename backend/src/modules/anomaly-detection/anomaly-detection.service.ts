@@ -2,34 +2,45 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { env } from "../../config/env.js";
 import { buildFeatureVector, featureVectorToMlRow } from "./feature-engineering.js";
 import {
+  closeAnomalyIncident,
   createManyReadingFeatures,
+  createAnomalyIncident,
+  findPredictionByReadingId,
+  getLatestDeviceReadingSummary,
+  getOpenAnomalyIncidentForDevice,
   getDeviceTimezone,
   getActiveDeviceModel,
   getReadingForScoring,
+  linkPredictionToAnomalyEvent,
   listMissingTrainingWindowReadings,
+  listDeviceAnomalyIncidents,
   listPreviousReadingsForDevice,
   listReadingsBeforeLocalDate,
   listRecentClosedDailyDates,
   listTrainingFeatureRows,
   listTrainingWindowReadings,
   replaceActiveDeviceModel,
-  upsertAnomalyEvent,
+  extendAnomalyIncident,
   upsertPrediction,
   upsertReadingFeature,
 } from "./anomaly-detection.repository.js";
 import { scoreIsolationForestReading, trainIsolationForestModel } from "./ml-service.client.js";
 import {
   ANOMALY_FEATURE_SCHEMA_VERSION,
+  ANOMALY_INCIDENT_GAP_MS,
   ANOMALY_MODEL_TYPE,
   ANOMALY_MODEL_VERSION,
   FEATURE_ROLLING_WINDOW_SIZE,
 } from "./anomaly-detection.constants.js";
 import type {
+  DeviceAnomalyIncidentSummary,
+  DeviceLatestReadingSummary,
   DeviceModelTrainingResult,
   DeviceReadingFeatureVector,
   DeviceReadingScoringResult,
   DeviceReadingForFeatures,
 } from "./anomaly-detection.types.js";
+import type { OwnedDeviceContext } from "../../common/ownership/device-ownership.js";
 
 export async function trainDeviceAnomalyModel(
   deviceId: string,
@@ -230,12 +241,14 @@ export async function scoreDeviceReading(
 
   const feature = buildFeatureVector(reading, previousReadings);
   await upsertReadingFeature(feature);
+  const existingPrediction = await findPredictionByReadingId(readingId);
 
   const activeModel = await getActiveDeviceModel(reading.deviceId);
   if (!activeModel) {
     await upsertPrediction({
       readingId,
       deviceId: reading.deviceId,
+      anomalyEventId: existingPrediction?.anomalyEventId ?? null,
       scoredAt: new Date(),
       status: "model_not_ready",
       details: {
@@ -252,6 +265,7 @@ export async function scoreDeviceReading(
 
   try {
     const scoredAt = new Date();
+    const openIncident = await getOpenAnomalyIncidentForDevice(reading.deviceId);
     const scoring = await scoreIsolationForestReading({
       artifact: activeModel.artifact,
       featureSchemaVersion: feature.featureSchemaVersion,
@@ -265,6 +279,7 @@ export async function scoreDeviceReading(
       readingId,
       deviceId: reading.deviceId,
       modelId: activeModel.id,
+      anomalyEventId: existingPrediction?.anomalyEventId ?? null,
       scoredAt,
       score: scoring.score,
       decisionFunction: scoring.decisionFunction,
@@ -276,6 +291,13 @@ export async function scoreDeviceReading(
     });
 
     if (!scoring.isAnomaly) {
+      if (openIncident && reading.ts.getTime() >= new Date(openIncident.windowEnd).getTime()) {
+        await closeAnomalyIncident({
+          id: openIncident.id,
+          details: buildClosedIncidentDetails(openIncident.details, "normal_reading", reading.id, reading.ts),
+        });
+      }
+
       return {
         status: "scored",
         predictionCreated: true,
@@ -284,7 +306,65 @@ export async function scoreDeviceReading(
     }
 
     const expectedValue = getExpectedValueFromSummary(activeModel.summary, feature.dayGroup, feature.localHour);
-    await upsertAnomalyEvent({
+    if (existingPrediction?.anomalyEventId) {
+      return {
+        status: "scored",
+        predictionCreated: true,
+        anomalyCreated: false,
+      };
+    }
+
+    const incidentDetails = buildIncidentDetails(null, {
+      readingId,
+      predictionId: prediction.id,
+      detectedAt: reading.ts,
+      dayGroup: feature.dayGroup,
+      localHour: feature.localHour,
+      decisionFunction: scoring.decisionFunction,
+      featureSchemaVersion: feature.featureSchemaVersion,
+    });
+
+    if (openIncident) {
+      const openStartMs = new Date(openIncident.windowStart).getTime();
+      const openEndMs = new Date(openIncident.windowEnd).getTime();
+      const readingTsMs = reading.ts.getTime();
+
+      if (readingTsMs >= openStartMs && readingTsMs <= openEndMs + ANOMALY_INCIDENT_GAP_MS) {
+        await extendAnomalyIncident({
+          id: openIncident.id,
+          modelId: activeModel.id,
+          detectedAt: new Date(Math.max(readingTsMs, openEndMs)),
+          observedValue: reading.apower,
+          expectedValue,
+          score: scoring.score,
+          details: buildIncidentDetails(openIncident.details, {
+            readingId,
+            predictionId: prediction.id,
+            detectedAt: new Date(Math.max(readingTsMs, openEndMs)),
+            dayGroup: feature.dayGroup,
+            localHour: feature.localHour,
+            decisionFunction: scoring.decisionFunction,
+            featureSchemaVersion: feature.featureSchemaVersion,
+          }),
+        });
+        await linkPredictionToAnomalyEvent(prediction.id, openIncident.id);
+
+        return {
+          status: "scored",
+          predictionCreated: true,
+          anomalyCreated: false,
+        };
+      }
+
+      if (readingTsMs > openEndMs + ANOMALY_INCIDENT_GAP_MS) {
+        await closeAnomalyIncident({
+          id: openIncident.id,
+          details: buildClosedIncidentDetails(openIncident.details, "gap", reading.id, reading.ts),
+        });
+      }
+    }
+
+    const incident = await createAnomalyIncident({
       deviceId: reading.deviceId,
       modelId: activeModel.id,
       predictionId: prediction.id,
@@ -293,13 +373,9 @@ export async function scoreDeviceReading(
       observedValue: reading.apower,
       expectedValue,
       score: scoring.score,
-      details: {
-        dayGroup: feature.dayGroup,
-        localHour: feature.localHour,
-        decisionFunction: scoring.decisionFunction,
-        featureSchemaVersion: feature.featureSchemaVersion,
-      },
+      details: incidentDetails,
     });
+    await linkPredictionToAnomalyEvent(prediction.id, incident.id);
 
     return {
       status: "scored",
@@ -312,6 +388,7 @@ export async function scoreDeviceReading(
       readingId,
       deviceId: reading.deviceId,
       modelId: activeModel.id,
+      anomalyEventId: existingPrediction?.anomalyEventId ?? null,
       scoredAt: new Date(),
       status: "score_failed",
       details: {
@@ -326,6 +403,69 @@ export async function scoreDeviceReading(
       anomalyCreated: false,
     };
   }
+}
+
+export async function getDeviceAnomalyState(device: OwnedDeviceContext) {
+  const [latestReading, activeModel, activeAnomaly] = await Promise.all([
+    getLatestDeviceReadingSummary(device.id),
+    getActiveDeviceModel(device.id),
+    getOpenAnomalyIncidentForDevice(device.id),
+  ]);
+
+  return {
+    device,
+    latestReading,
+    model: activeModel
+      ? {
+        ready: true,
+        status: activeModel.status,
+        trainedAt: activeModel.trainedAt.toISOString(),
+        trainedTo: activeModel.trainedTo.toISOString().slice(0, 10),
+      }
+      : {
+        ready: false,
+        status: "model_not_ready",
+        trainedAt: null,
+        trainedTo: null,
+      },
+    activeAnomaly: activeAnomaly ?? null,
+  };
+}
+
+export async function listDeviceAnomalies(
+  device: OwnedDeviceContext,
+  query: {
+    from?: string;
+    to?: string;
+    status: "all" | "open" | "closed";
+    limit: number;
+  },
+) {
+  const from = query.from ? parseOptionalDateOrThrow(query.from) : undefined;
+  const to = query.to ? parseOptionalDateOrThrow(query.to) : undefined;
+
+  if (from && to && from.getTime() >= to.getTime()) {
+    throw new Error("INVALID_RANGE");
+  }
+
+  const anomalies = await listDeviceAnomalyIncidents({
+    deviceId: device.id,
+    from,
+    to,
+    status: query.status,
+    limit: query.limit,
+  });
+
+  return {
+    device,
+    filters: {
+      from: from?.toISOString() ?? null,
+      to: to?.toISOString() ?? null,
+      status: query.status,
+      limit: query.limit,
+    },
+    anomalies,
+  };
 }
 
 async function backfillTrainingFeatures(
@@ -440,6 +580,68 @@ function addLocalDays(value: string, days: number): string {
 
 function localDateStringToDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+function parseOptionalDateOrThrow(value: string): Date {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("INVALID_RANGE");
+  }
+  return parsed;
+}
+
+function buildIncidentDetails(
+  existing: Prisma.JsonValue | null,
+  updates: {
+    readingId: bigint;
+    predictionId: string;
+    detectedAt: Date;
+    dayGroup: string;
+    localHour: number;
+    decisionFunction: number | null;
+    featureSchemaVersion: string;
+  },
+): Prisma.InputJsonValue {
+  const base = asJsonObject(existing);
+
+  return {
+    ...base,
+    dayGroup: updates.dayGroup,
+    localHour: updates.localHour,
+    decisionFunction: updates.decisionFunction,
+    featureSchemaVersion: updates.featureSchemaVersion,
+    firstReadingId: typeof base.firstReadingId === "string" ? base.firstReadingId : updates.readingId.toString(),
+    lastReadingId: updates.readingId.toString(),
+    firstPredictionId: typeof base.firstPredictionId === "string"
+      ? base.firstPredictionId
+      : updates.predictionId,
+    lastPredictionId: updates.predictionId,
+    lastDetectedAt: updates.detectedAt.toISOString(),
+  };
+}
+
+function buildClosedIncidentDetails(
+  existing: Prisma.JsonValue | null,
+  reason: "gap" | "normal_reading",
+  readingId: bigint,
+  closedAt: Date,
+): Prisma.InputJsonValue {
+  const base = asJsonObject(existing);
+
+  return {
+    ...base,
+    closedReason: reason,
+    closedAt: closedAt.toISOString(),
+    closedByReadingId: readingId.toString(),
+  };
+}
+
+function asJsonObject(value: Prisma.JsonValue | null): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as Record<string, unknown>;
 }
 
 function getExpectedValueFromSummary(

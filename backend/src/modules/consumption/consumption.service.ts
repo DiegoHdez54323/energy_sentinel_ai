@@ -7,7 +7,6 @@ import {
   listDeviceRawConsumption,
   listHomeDailyConsumption,
   listHomeHourlyConsumption,
-  listHomeRawConsumption,
 } from "./consumption.repository.js";
 import type { ConsumptionGranularityInput, ConsumptionQueryInput } from "./consumption.schemas.js";
 
@@ -42,7 +41,7 @@ function validateRangeOrThrow(from: Date, to: Date) {
   }
 }
 
-function resolveGranularityOrThrow(
+function resolveDeviceGranularityOrThrow(
   requested: ConsumptionGranularityInput,
   from: Date,
   to: Date,
@@ -71,6 +70,28 @@ function resolveGranularityOrThrow(
   return "daily";
 }
 
+function resolveHomeGranularityOrThrow(
+  requested: ConsumptionGranularityInput,
+  from: Date,
+  to: Date,
+): Exclude<ResolvedConsumptionGranularity, "raw"> {
+  const spanMs = to.getTime() - from.getTime();
+
+  if (requested === "raw") {
+    throw new Error("INVALID_GRANULARITY_FOR_RANGE");
+  }
+
+  if (requested === "hourly" || requested === "daily") {
+    return requested;
+  }
+
+  if (spanMs <= FOURTEEN_DAYS_MS) {
+    return "hourly";
+  }
+
+  return "daily";
+}
+
 async function listSeriesForDevice(options: {
   deviceId: string;
   granularity: ResolvedConsumptionGranularity;
@@ -89,13 +110,11 @@ async function listSeriesForDevice(options: {
 
 async function listSeriesForHome(options: {
   homeId: string;
-  granularity: ResolvedConsumptionGranularity;
+  granularity: Exclude<ResolvedConsumptionGranularity, "raw">;
   from: Date;
   to: Date;
 }): Promise<ConsumptionSeriesPoint[]> {
   switch (options.granularity) {
-    case "raw":
-      return listHomeRawConsumption(options);
     case "hourly":
       return listHomeHourlyConsumption(options);
     case "daily":
@@ -116,7 +135,7 @@ export async function getDeviceConsumption(
     throw new Error("DEVICE_NOT_FOUND");
   }
 
-  const granularityResolved = resolveGranularityOrThrow(query.granularity, from, to);
+  const granularityResolved = resolveDeviceGranularityOrThrow(query.granularity, from, to);
   const series = await listSeriesForDevice({
     deviceId: device.id,
     granularity: granularityResolved,
@@ -145,7 +164,7 @@ export async function getHomeConsumption(
   const to = parseDateOrThrow(query.to);
   validateRangeOrThrow(from, to);
 
-  const granularityResolved = resolveGranularityOrThrow(query.granularity, from, to);
+  const granularityResolved = resolveHomeGranularityOrThrow(query.granularity, from, to);
   const series = await listSeriesForHome({
     homeId: home.id,
     granularity: granularityResolved,

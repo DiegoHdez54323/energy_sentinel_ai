@@ -313,11 +313,15 @@ Reglas actuales:
 
 - `GET /devices/:deviceId/consumption` usa ownership por device
 - `GET /homes/:homeId/consumption` usa ownership por home
-- `granularity=auto` resuelve:
+- para `devices`, `granularity=auto` resuelve:
   - `raw` para ventanas `<= 6h`
   - `hourly` para ventanas `> 6h` y `<= 14d`
   - `daily` para ventanas `> 14d`
-- `granularity=raw` solo se acepta para ventanas `<= 24h`
+- para `homes`, `granularity=auto` resuelve:
+  - `hourly` para ventanas `<= 14d`
+  - `daily` para ventanas `> 14d`
+- `granularity=raw` solo se acepta para `devices` con ventanas `<= 24h`
+- `granularity=raw` no se acepta para `homes`
 - el rango máximo expuesto en v1 es `90d`
 - la respuesta siempre devuelve un `series[]` homogéneo con:
   - `ts`
@@ -354,6 +358,24 @@ Reglas actuales:
 - si no existe modelo activo, las lecturas se ingieren igual y la predicción queda como `model_not_ready`
 - si falla un device, la corrida sigue con los demás
 
+### 5.7 `anomaly-detection`
+
+Responsabilidades:
+
+- exponer snapshot actual por device para frontend móvil
+- exponer incidentes de anomalías por device
+- persistir predicciones por lectura y eventos agrupados por racha
+
+Reglas actuales:
+
+- `GET /devices/:deviceId/state` usa ownership por device
+- `GET /devices/:deviceId/anomalies` usa ownership por device
+- `device_anomaly_predictions` sigue siendo 1 fila por lectura scoreada
+- `anomaly_events` representa incidentes agrupados por racha
+- una lectura anómala dentro de `5m` del `windowEnd` extiende el incidente abierto del device
+- una lectura normal posterior cierra el incidente abierto
+- si una nueva anomalía rompe el gap de `5m`, el incidente anterior se cierra y se abre otro
+
 ## 6. App entrypoint y middleware global
 
 En `backend/src/app/app.ts` se monta:
@@ -369,6 +391,7 @@ Routers montados:
 - `/auth`
 - `/integrations/shelly`
 - `/homes`
+- `/` para `anomaly-detection`
 - `/` para `consumption`
 - `/` para `devices`
 
@@ -732,6 +755,8 @@ Query params:
 - `from`: ISO datetime
 - `to`: ISO datetime
 - `granularity`: `auto | raw | hourly | daily` opcional, default `auto`
+- en `homes`, `raw` devuelve `400 INVALID_GRANULARITY_FOR_RANGE` y `auto` resuelve mínimo a `hourly`
+- `raw` no se acepta para homes; en homes `auto` resuelve mínimo a `hourly`
 
 Ejemplo:
 
@@ -795,6 +820,7 @@ Query params:
 - `from`: ISO datetime
 - `to`: ISO datetime
 - `granularity`: `auto | raw | hourly | daily` opcional, default `auto`
+- en `homes`, `raw` devuelve `400 INVALID_GRANULARITY_FOR_RANGE` y `auto` resuelve mínimo a `hourly`
 
 Ejemplo:
 
@@ -839,7 +865,7 @@ Errores relevantes v1:
 - `400 INVALID_QUERY`
 - `400 INVALID_RANGE`
 - `400 INVALID_GRANULARITY_FOR_RANGE`
-- `404 DEVICE_NOT_FOUND`
+- `404 HOME_NOT_FOUND`
 - `404 HOME_NOT_FOUND`
 
 ### 7.5 Devices
@@ -1049,7 +1075,146 @@ Protección adicional:
 
 - ownership del device por `requireOwnedDeviceParam("deviceId")`
 
-### 7.5 Integración Shelly
+### 7.6 Anomalías
+
+#### `GET /devices/:deviceId/state`
+
+Propósito:
+
+- devolver snapshot actual del device
+- incluir última lectura, estado del modelo y posible incidente abierto
+
+Auth:
+
+- sí requiere access token del backend
+- requiere ownership del device
+
+Payload:
+
+- no recibe body
+
+Ejemplo de respuesta:
+
+```json
+{
+  "device": {
+    "id": "7a9dd8a8-d7be-4f46-bb4c-a8ea0f53cfd1",
+    "homeId": "4becefa6-f3ef-4fd0-9714-f2dd3e437251",
+    "userId": "2c3d44b0-8e16-4e1f-9dc4-5330633a5f63",
+    "vendor": "shelly",
+    "deviceCode": "S4PL-00116US",
+    "displayName": "Cafetera",
+    "ipAddress": "192.168.2.18",
+    "macAddress": "58E6C50A5B38",
+    "externalDeviceId": "58e6c50a5b38",
+    "status": "active",
+    "lastSeenAt": null,
+    "dataSource": "shelly_cloud",
+    "createdAt": "2026-03-06T05:50:00.000Z",
+    "updatedAt": "2026-03-06T05:50:00.000Z"
+  },
+  "latestReading": {
+    "ts": "2026-03-24T18:00:00.000Z",
+    "apower": 61,
+    "aenergyDelta": 2,
+    "voltage": 121,
+    "current": 0.5,
+    "output": true
+  },
+  "model": {
+    "ready": true,
+    "status": "active",
+    "trainedAt": "2026-03-03T10:00:00.000Z",
+    "trainedTo": "2026-03-02"
+  },
+  "activeAnomaly": {
+    "id": "b7c99fe2-4048-47f0-84ef-4bc9fd3f1f7d",
+    "status": "open",
+    "detectedAt": "2026-03-24T18:00:00.000Z",
+    "windowStart": "2026-03-24T18:00:00.000Z",
+    "windowEnd": "2026-03-24T18:03:00.000Z",
+    "readingsCount": 2,
+    "severity": 1,
+    "score": -0.9,
+    "expectedValue": 50,
+    "observedValue": 61,
+    "details": {
+      "dayGroup": "weekday",
+      "localHour": 18
+    }
+  }
+}
+```
+
+#### `GET /devices/:deviceId/anomalies`
+
+Propósito:
+
+- devolver incidentes de anomalías agrupados por device
+
+Auth:
+
+- sí requiere access token del backend
+- requiere ownership del device
+
+Query params:
+
+- `from`: ISO datetime opcional
+- `to`: ISO datetime opcional
+- `status`: `all | open | closed`, opcional, default `all`
+- `limit`: entero positivo, opcional, default `20`, max `100`
+
+Ejemplo de respuesta:
+
+```json
+{
+  "device": {
+    "id": "7a9dd8a8-d7be-4f46-bb4c-a8ea0f53cfd1",
+    "homeId": "4becefa6-f3ef-4fd0-9714-f2dd3e437251",
+    "userId": "2c3d44b0-8e16-4e1f-9dc4-5330633a5f63",
+    "vendor": "shelly",
+    "deviceCode": "S4PL-00116US",
+    "displayName": "Cafetera",
+    "ipAddress": "192.168.2.18",
+    "macAddress": "58E6C50A5B38",
+    "externalDeviceId": "58e6c50a5b38",
+    "status": "active",
+    "lastSeenAt": null,
+    "dataSource": "shelly_cloud",
+    "createdAt": "2026-03-06T05:50:00.000Z",
+    "updatedAt": "2026-03-06T05:50:00.000Z"
+  },
+  "filters": {
+    "from": null,
+    "to": null,
+    "status": "all",
+    "limit": 20
+  },
+  "anomalies": [
+    {
+      "id": "b7c99fe2-4048-47f0-84ef-4bc9fd3f1f7d",
+      "status": "closed",
+      "detectedAt": "2026-03-24T17:00:00.000Z",
+      "windowStart": "2026-03-24T17:00:00.000Z",
+      "windowEnd": "2026-03-24T17:04:00.000Z",
+      "readingsCount": 2,
+      "severity": 1,
+      "score": -0.7,
+      "expectedValue": null,
+      "observedValue": null,
+      "details": null
+    }
+  ]
+}
+```
+
+Errores relevantes v1:
+
+- `400 INVALID_QUERY`
+- `400 INVALID_RANGE`
+- `404 DEVICE_NOT_FOUND`
+
+### 7.7 Integración Shelly
 
 #### `GET /integrations/shelly`
 
@@ -1551,75 +1716,446 @@ Comportamiento actual:
 - `user_push_tokens`
 - `notification_logs`
 
-### Resumen por tabla
+### Resumen por tabla y relaciones
 
 #### `users`
 
-- identidad del usuario del backend
+Propósito:
+
+- identidad principal del usuario del backend
+
+Relaciones:
+
+- `1:N` con `homes`
+- `1:N` con `devices`
+- `1:N` con `refresh_tokens`
+- `1:1` opcional con `shelly_integrations`
+- `1:N` con `shelly_oauth_states`
+- `1:N` con `user_push_tokens`
+- `1:N` con `notification_logs`
+
+Campos clave:
+
+- `id`
+- `email` único
+- `password_hash`
+- `name`
+- timestamps de creación y actualización
 
 #### `refresh_tokens`
 
-- refresh tokens hasheados
-- expiración y revocación
+Propósito:
+
+- persistir refresh tokens del backend de forma hasheada
+
+Relaciones:
+
+- `N:1` hacia `users`
+
+Campos clave:
+
+- `user_id`
+- `token_hash` único
+- `expires_at`
+- `revoked_at`
+
+Notas:
+
+- soporta rotación y revocación de refresh tokens
 
 #### `homes`
 
-- agrupación lógica de devices por usuario
-- incluye `timezone`
+Propósito:
+
+- agrupar devices del usuario bajo un contexto doméstico o ubicación
+
+Relaciones:
+
+- `N:1` hacia `users`
+- `1:N` con `devices`
+
+Campos clave:
+
+- `user_id`
+- `name`
+- `timezone`
+
+Notas:
+
+- `timezone` es crítico para agregados diarios y entrenamiento ML por día local
 
 #### `shelly_integrations`
 
-- vínculo 1:1 usuario <-> cuenta Shelly
+Propósito:
+
+- persistir la conexión del usuario con Shelly Cloud
+
+Relaciones:
+
+- `1:1` con `users` por `user_id` único
+
+Campos clave:
+
+- `client_id`
+- `user_api_url`
 - `auth_code`
 - `access_token`
 - `access_token_expires_at`
-- `user_api_url`
 - `status`
 - `last_sync_at`
 
+Notas:
+
+- el `access_token` de Shelly se guarda solo en servidor
+- `user_api_url` se usa para consumir la API correcta del tenant Shelly
+
 #### `shelly_oauth_states`
 
-- `state` temporal del flujo OAuth
-- expiración y consumo
+Propósito:
+
+- soportar el flujo OAuth con `state` temporal y consumible una sola vez
+
+Relaciones:
+
+- `N:1` hacia `users`
+
+Campos clave:
+
+- `state` único
+- `expires_at`
+- `consumed_at`
 
 #### `devices`
 
-- inventario local de devices ya importados
-- ownership por `userId`
-- pertenencia a `homeId`
-- unicidad por `userId + externalDeviceId`
+Propósito:
+
+- inventario local de devices ya conocidos por el backend
+
+Relaciones:
+
+- `N:1` hacia `users`
+- `N:1` hacia `homes`
+- `1:N` con `device_readings`
+- `1:N` con `device_usage_hourly`
+- `1:N` con `device_usage_daily`
+- `1:N` con `device_anomaly_models`
+- `1:N` con `device_reading_features`
+- `1:N` con `device_anomaly_predictions`
+- `1:N` con `anomaly_events`
+
+Campos clave:
+
+- `home_id`
+- `user_id`
+- `vendor`
+- `device_code`
+- `display_name`
+- `ip_address`
+- `mac_address`
+- `external_device_id`
+- `status`
+- `last_seen_at`
+- `data_source`
+
+Restricciones e índices:
+
+- unicidad por `user_id + external_device_id`
+- índices por `home_id` y `user_id`
 
 #### `device_readings`
 
-- telemetría cruda ingerida desde Shelly
-- unicidad por `deviceId + ts`
-- usa nombres alineados a `switch:0`
+Propósito:
 
-#### `device_usage_hourly` y `device_usage_daily`
+- guardar la telemetría cruda ingerida desde Shelly para cada device
 
-- tablas de agregados activas como job backend
-- `device_usage_hourly` resume `device_readings` por hora UTC cerrada
-- `device_usage_daily` resume `device_readings` por día local cerrado según `home.timezone`
-- métricas actuales:
-  - `energyWh = SUM(aenergy_delta)`
-  - `avgPowerW = AVG(apower)`
-  - `maxPowerW = MAX(apower)`
-  - `minPowerW = MIN(apower)`
-  - `samplesCount = COUNT(*)`
+Relaciones:
+
+- `N:1` hacia `devices`
+- `1:N` con `device_reading_features`
+- `1:N` con `device_anomaly_predictions`
+- `1:N` con `anomaly_events`
+
+Campos clave:
+
+- `device_id`
+- `ts`
+- `apower`
+- `voltage`
+- `current`
+- `freq`
+- `output`
+- `aenergy_total`
+- `aenergy_delta`
+- `aenergy_minute_ts`
+- `aenergy_by_minute`
+- `ret_aenergy_total`
+- `ret_aenergy_minute_ts`
+- `ret_aenergy_by_minute`
+- `temperature_tc`
+- `temperature_tf`
+- `source`
+
+Restricciones e índices:
+
+- unicidad por `device_id + ts`
+- índice por `device_id, ts`
+
+Notas:
+
+- esta es la fuente de verdad de consumo crudo y snapshot actual por device
+
+#### `device_usage_hourly`
+
+Propósito:
+
+- almacenar agregados horarios cerrados por device
+
+Relaciones:
+
+- `N:1` hacia `devices`
+
+Campos clave:
+
+- `device_id`
+- `hour_ts`
+- `energy_wh`
+- `avg_power_w`
+- `max_power_w`
+- `min_power_w`
+- `samples_count`
+
+Restricciones:
+
+- unicidad por `device_id + hour_ts`
+
+#### `device_usage_daily`
+
+Propósito:
+
+- almacenar agregados diarios cerrados por device usando el día local del home
+
+Relaciones:
+
+- `N:1` hacia `devices`
+
+Campos clave:
+
+- `device_id`
+- `date`
+- `energy_wh`
+- `avg_power_w`
+- `max_power_w`
+- `min_power_w`
+- `samples_count`
+
+Restricciones:
+
+- unicidad por `device_id + date`
+
+#### `device_anomaly_models`
+
+Propósito:
+
+- guardar versiones entrenadas del modelo de anomalías por device
+
+Relaciones:
+
+- `N:1` hacia `devices`
+- `1:N` con `device_anomaly_predictions`
+- `1:N` con `anomaly_events`
+
+Campos clave:
+
+- `device_id`
+- `model_type`
+- `model_version`
+- `feature_schema_version`
+- `contamination`
+- `training_window_days`
+- `trained_from`
+- `trained_to`
+- `trained_at`
+- `training_sample_count`
+- `timezone`
+- `artifact`
+- `summary`
+- `is_active`
+- `status`
+- `superseded_at`
+
+Notas:
+
+- `artifact` guarda el modelo serializado
+- solo un modelo activo por device debe considerarse fuente de scoring
+
+#### `device_reading_features`
+
+Propósito:
+
+- materializar el vector de features usado para entrenamiento y scoring
+
+Relaciones:
+
+- `N:1` hacia `device_readings`
+- `N:1` hacia `devices`
+
+Campos clave:
+
+- `reading_id`
+- `device_id`
+- `ts`
+- `local_date`
+- `feature_schema_version`
+- `timezone`
+- `day_group`
+- `local_hour`
+- `day_of_week`
+- `apower`
+- `aenergy_delta`
+- `output_numeric`
+- `hour_sin`
+- `hour_cos`
+- `day_of_week_sin`
+- `day_of_week_cos`
+- `delta_power_prev`
+- `rolling_mean_power_5`
+- `rolling_std_power_5`
+
+Restricciones:
+
+- unicidad por `reading_id + feature_schema_version`
+
+#### `device_anomaly_predictions`
+
+Propósito:
+
+- guardar el resultado del scoring por lectura
+
+Relaciones:
+
+- `N:1` hacia `device_readings`
+- `N:1` hacia `devices`
+- `N:1` opcional hacia `device_anomaly_models`
+- `N:1` opcional hacia `anomaly_events`
+
+Campos clave:
+
+- `reading_id` único
+- `device_id`
+- `model_id`
+- `anomaly_event_id`
+- `scored_at`
+- `score`
+- `decision_function`
+- `is_anomaly`
+- `status`
+- `details`
+
+Notas:
+
+- representa el nivel granular por lectura
+- una predicción puede quedar ligada a un incidente agrupado mediante `anomaly_event_id`
+
+#### `anomaly_events`
+
+Propósito:
+
+- persistir incidentes agrupados por racha de anomalías a nivel device
+
+Relaciones:
+
+- `N:1` hacia `devices`
+- `N:1` opcional hacia `device_anomaly_models`
+- `N:1` opcional hacia `device_readings` usando la lectura que abrió el incidente
+- `1:N` con `device_anomaly_predictions`
+- `1:N` con `notification_logs`
+
+Campos clave:
+
+- `device_id`
+- `model_id`
+- `prediction_id`
+- `reading_id`
+- `status`
+- `readings_count`
+- `detected_at`
+- `window_start`
+- `window_end`
+- `anomaly_type`
+- `severity`
+- `score`
+- `expected_value`
+- `observed_value`
+- `details`
+
+Restricciones e índices:
+
+- índices por `device_id, detected_at` y `device_id, status, detected_at`
+- en DB existe índice único parcial para permitir solo un incidente `open` por `device`
+
+Notas:
+
+- `prediction_id` y `reading_id` conservan trazabilidad al primer disparo del incidente
+- el incidente se extiende con nuevas predicciones anómalas cercanas en el tiempo
+
+#### `user_push_tokens`
+
+Propósito:
+
+- guardar tokens push por usuario para notificaciones futuras
+
+Relaciones:
+
+- `N:1` hacia `users`
+
+Campos clave:
+
+- `user_id`
+- `token` único
+- `platform`
+- `is_active`
+- `last_seen_at`
+
+Notas:
+
+- la tabla existe, pero el flujo de push todavía no está implementado de punta a punta
+
+#### `notification_logs`
+
+Propósito:
+
+- auditar intentos de envío de notificaciones por canal
+
+Relaciones:
+
+- `N:1` hacia `users`
+- `N:1` opcional hacia `anomaly_events`
+
+Campos clave:
+
+- `user_id`
+- `anomaly_event_id`
+- `sent_at`
+- `channel`
+- `status`
+- `error_message`
 
 #### `job_locks`
 
+Propósito:
+
 - lock distribuido para jobs batch
+
+Campos clave:
+
+- `key`
+- `owner_id`
+- `expires_at`
+- timestamps de creación y actualización
+
+Notas:
+
 - evita que polling o aggregates se ejecuten en paralelo en procesos distintos
-- usa lease temporal con `expires_at`
-
-#### `device_anomaly_models`, `device_reading_features`, `device_anomaly_predictions` y `anomaly_events`
-
-- `device_anomaly_models` guarda snapshots versionados del `IsolationForest` activo por device
-- el modelo entrenado no se guarda como archivo en disco; se serializa con `pickle` y se guarda en `artifact`
-- `device_reading_features` materializa el vector de features por lectura
-- `device_anomaly_predictions` guarda el resultado de scoring por `device_reading`
-- `anomaly_events` persiste solo los casos marcados como anomalía
 
 ## 14.1 Flujo ML actual
 
@@ -1659,13 +2195,15 @@ Resumen:
 7. si existe, manda `artifact + featureVector` al `ml-service` por `POST /score`
 8. el `ml-service` deserializa el modelo y scorea la lectura
 9. el backend guarda el resultado en `device_anomaly_predictions`
-10. si `isAnomaly=true`, también crea `anomaly_events`
+10. si `isAnomaly=true`, crea o extiende un incidente en `anomaly_events`
 
 Reglas actuales:
 
 - todas las lecturas nuevas de un mismo device usan el mismo modelo activo de ese device
 - el `ml-service` es stateless: no guarda modelos en memoria permanente ni habla con Postgres
 - el backend es quien decide qué modelo usar y lo recupera desde DB
+- `device_anomaly_predictions` guarda el detalle por lectura
+- `anomaly_events` agrupa esas lecturas en incidentes
 
 ### Features actuales
 
@@ -1765,13 +2303,15 @@ Ese script:
 - polling Shelly para `device_readings`
 - job de agregación horaria y diaria para `device_usage_hourly` y `device_usage_daily`
 - scoring de anomalías por lectura nueva desde el polling
+- endpoint `GET /devices/:deviceId/state`
+- endpoint `GET /devices/:deviceId/anomalies`
 - entrenamiento/reentrenamiento ML con `IsolationForest`
 - separación entre servidor HTTP y jobs batch
 - jobs one-shot para polling y aggregates
 
 ### No implementado completamente todavía
 
-- endpoints para inspección de modelos/predicciones/anomalías
+- endpoints crudos para inspección de modelos y predicciones por lectura
 - envío de notificaciones push
 
 ## 16. Principios de diseño que sigue el backend

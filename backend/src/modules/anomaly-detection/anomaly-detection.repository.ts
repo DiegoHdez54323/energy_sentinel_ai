@@ -2,13 +2,60 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../lib/prisma.js";
 import {
   ANOMALY_FEATURE_SCHEMA_VERSION,
+  ANOMALY_INCIDENT_STATUS_OPEN,
   ANOMALY_MODEL_TYPE,
   ANOMALY_MODEL_VERSION,
 } from "./anomaly-detection.constants.js";
 import type {
+  DeviceAnomalyIncidentSummary,
+  DeviceLatestReadingSummary,
   DeviceReadingFeatureVector,
   DeviceReadingForFeatures,
 } from "./anomaly-detection.types.js";
+
+type IncidentRow = {
+  id: string;
+  status: string;
+  detectedAt: Date;
+  windowStart: Date;
+  windowEnd: Date;
+  readingsCount: number;
+  severity: number;
+  score: Prisma.Decimal | number | string | null;
+  expectedValue: Prisma.Decimal | number | string | null;
+  observedValue: Prisma.Decimal | number | string | null;
+  details: Prisma.JsonValue | null;
+};
+
+function decimalToNumber(value: Prisma.Decimal | number | string | null | undefined): number | null {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return value instanceof Prisma.Decimal ? value.toNumber() : null;
+}
+
+function normalizeIncident(row: IncidentRow): DeviceAnomalyIncidentSummary {
+  return {
+    id: row.id,
+    status: row.status as DeviceAnomalyIncidentSummary["status"],
+    detectedAt: row.detectedAt.toISOString(),
+    windowStart: row.windowStart.toISOString(),
+    windowEnd: row.windowEnd.toISOString(),
+    readingsCount: row.readingsCount,
+    severity: row.severity,
+    score: decimalToNumber(row.score),
+    expectedValue: decimalToNumber(row.expectedValue),
+    observedValue: decimalToNumber(row.observedValue),
+    details: row.details,
+  };
+}
 
 export async function getReadingForScoring(readingId: bigint): Promise<DeviceReadingForFeatures | null> {
   const rows = await prisma.$queryRaw<Array<{
@@ -399,6 +446,7 @@ export async function upsertPrediction(input: {
   readingId: bigint;
   deviceId: string;
   modelId?: string | null;
+  anomalyEventId?: string | null;
   scoredAt: Date;
   score?: number | null;
   decisionFunction?: number | null;
@@ -406,34 +454,96 @@ export async function upsertPrediction(input: {
   status: string;
   details?: Prisma.InputJsonValue | null;
 }) {
+  const createData = {
+    readingId: input.readingId,
+    deviceId: input.deviceId,
+    modelId: input.modelId ?? null,
+    anomalyEventId: input.anomalyEventId ?? null,
+    scoredAt: input.scoredAt,
+    score: input.score ?? null,
+    decisionFunction: input.decisionFunction ?? null,
+    isAnomaly: input.isAnomaly ?? null,
+    status: input.status,
+    details: input.details ?? Prisma.JsonNull,
+  };
+
+  const updateData = {
+    modelId: input.modelId ?? null,
+    scoredAt: input.scoredAt,
+    score: input.score ?? null,
+    decisionFunction: input.decisionFunction ?? null,
+    isAnomaly: input.isAnomaly ?? null,
+    status: input.status,
+    details: input.details ?? Prisma.JsonNull,
+    ...(input.anomalyEventId !== undefined
+      ? {
+        anomalyEventId: input.anomalyEventId,
+      }
+      : {}),
+  };
+
   return prisma.deviceAnomalyPrediction.upsert({
     where: {
       readingId: input.readingId,
     },
-    create: {
-      readingId: input.readingId,
-      deviceId: input.deviceId,
-      modelId: input.modelId ?? null,
-      scoredAt: input.scoredAt,
-      score: input.score ?? null,
-      decisionFunction: input.decisionFunction ?? null,
-      isAnomaly: input.isAnomaly ?? null,
-      status: input.status,
-      details: input.details ?? Prisma.JsonNull,
+    create: createData,
+    update: updateData,
+  });
+}
+
+export async function findPredictionByReadingId(readingId: bigint) {
+  return prisma.deviceAnomalyPrediction.findUnique({
+    where: {
+      readingId,
     },
-    update: {
-      modelId: input.modelId ?? null,
-      scoredAt: input.scoredAt,
-      score: input.score ?? null,
-      decisionFunction: input.decisionFunction ?? null,
-      isAnomaly: input.isAnomaly ?? null,
-      status: input.status,
-      details: input.details ?? Prisma.JsonNull,
+    select: {
+      id: true,
+      anomalyEventId: true,
+      status: true,
+      isAnomaly: true,
     },
   });
 }
 
-export async function upsertAnomalyEvent(input: {
+export async function linkPredictionToAnomalyEvent(predictionId: string, anomalyEventId: string) {
+  return prisma.deviceAnomalyPrediction.update({
+    where: {
+      id: predictionId,
+    },
+    data: {
+      anomalyEventId,
+    },
+  });
+}
+
+export async function getOpenAnomalyIncidentForDevice(deviceId: string) {
+  const incident = await prisma.anomalyEvent.findFirst({
+    where: {
+      deviceId,
+      status: ANOMALY_INCIDENT_STATUS_OPEN,
+    },
+    orderBy: {
+      detectedAt: "desc",
+    },
+    select: {
+      id: true,
+      status: true,
+      detectedAt: true,
+      windowStart: true,
+      windowEnd: true,
+      readingsCount: true,
+      severity: true,
+      score: true,
+      expectedValue: true,
+      observedValue: true,
+      details: true,
+    },
+  });
+
+  return incident ? normalizeIncident(incident) : null;
+}
+
+export async function createAnomalyIncident(input: {
   deviceId: string;
   modelId?: string | null;
   predictionId: string;
@@ -444,15 +554,14 @@ export async function upsertAnomalyEvent(input: {
   score?: number | null;
   details?: Prisma.InputJsonValue | null;
 }) {
-  return prisma.anomalyEvent.upsert({
-    where: {
-      readingId: input.readingId,
-    },
-    create: {
+  const incident = await prisma.anomalyEvent.create({
+    data: {
       deviceId: input.deviceId,
       modelId: input.modelId ?? null,
       predictionId: input.predictionId,
       readingId: input.readingId,
+      status: ANOMALY_INCIDENT_STATUS_OPEN,
+      readingsCount: 1,
       detectedAt: input.detectedAt,
       windowStart: input.detectedAt,
       windowEnd: input.detectedAt,
@@ -463,16 +572,187 @@ export async function upsertAnomalyEvent(input: {
       observedValue: input.observedValue ?? null,
       details: input.details ?? Prisma.JsonNull,
     },
-    update: {
+    select: {
+      id: true,
+      status: true,
+      detectedAt: true,
+      windowStart: true,
+      windowEnd: true,
+      readingsCount: true,
+      severity: true,
+      score: true,
+      expectedValue: true,
+      observedValue: true,
+      details: true,
+    },
+  });
+
+  return normalizeIncident(incident);
+}
+
+export async function extendAnomalyIncident(input: {
+  id: string;
+  modelId?: string | null;
+  detectedAt: Date;
+  observedValue?: number | null;
+  expectedValue?: number | null;
+  score?: number | null;
+  details?: Prisma.InputJsonValue | null;
+}) {
+  const incident = await prisma.anomalyEvent.update({
+    where: {
+      id: input.id,
+    },
+    data: {
       modelId: input.modelId ?? null,
-      predictionId: input.predictionId,
-      detectedAt: input.detectedAt,
-      windowStart: input.detectedAt,
       windowEnd: input.detectedAt,
+      readingsCount: {
+        increment: 1,
+      },
       score: input.score ?? null,
       expectedValue: input.expectedValue ?? null,
       observedValue: input.observedValue ?? null,
       details: input.details ?? Prisma.JsonNull,
     },
+    select: {
+      id: true,
+      status: true,
+      detectedAt: true,
+      windowStart: true,
+      windowEnd: true,
+      readingsCount: true,
+      severity: true,
+      score: true,
+      expectedValue: true,
+      observedValue: true,
+      details: true,
+    },
   });
+
+  return normalizeIncident(incident);
+}
+
+export async function closeAnomalyIncident(input: {
+  id: string;
+  details?: Prisma.InputJsonValue | null;
+}) {
+  const incident = await prisma.anomalyEvent.update({
+    where: {
+      id: input.id,
+    },
+    data: {
+      status: "closed",
+      details: input.details ?? Prisma.JsonNull,
+    },
+    select: {
+      id: true,
+      status: true,
+      detectedAt: true,
+      windowStart: true,
+      windowEnd: true,
+      readingsCount: true,
+      severity: true,
+      score: true,
+      expectedValue: true,
+      observedValue: true,
+      details: true,
+    },
+  });
+
+  return normalizeIncident(incident);
+}
+
+export async function getLatestDeviceReadingSummary(deviceId: string): Promise<DeviceLatestReadingSummary | null> {
+  const reading = await prisma.deviceReading.findFirst({
+    where: {
+      deviceId,
+    },
+    orderBy: [
+      {
+        ts: "desc",
+      },
+      {
+        id: "desc",
+      },
+    ],
+    select: {
+      ts: true,
+      apower: true,
+      aenergyDelta: true,
+      voltage: true,
+      current: true,
+      output: true,
+    },
+  });
+
+  if (!reading) {
+    return null;
+  }
+
+  return {
+    ts: reading.ts.toISOString(),
+    apower: decimalToNumber(reading.apower),
+    aenergyDelta: decimalToNumber(reading.aenergyDelta),
+    voltage: decimalToNumber(reading.voltage),
+    current: decimalToNumber(reading.current),
+    output: reading.output,
+  };
+}
+
+export async function listDeviceAnomalyIncidents(options: {
+  deviceId: string;
+  from?: Date;
+  to?: Date;
+  status?: "all" | "open" | "closed";
+  limit: number;
+}): Promise<DeviceAnomalyIncidentSummary[]> {
+  const incidents = await prisma.anomalyEvent.findMany({
+    where: {
+      deviceId: options.deviceId,
+      ...(options.status && options.status !== "all"
+        ? {
+          status: options.status,
+        }
+        : {}),
+      ...(options.from || options.to
+        ? {
+          AND: [
+            ...(options.from
+              ? [{
+                windowEnd: {
+                  gte: options.from,
+                },
+              }]
+              : []),
+            ...(options.to
+              ? [{
+                windowStart: {
+                  lt: options.to,
+                },
+              }]
+              : []),
+          ],
+        }
+        : {}),
+    },
+    orderBy: {
+      detectedAt: "desc",
+    },
+    take: options.limit,
+    select: {
+      id: true,
+      status: true,
+      detectedAt: true,
+      windowStart: true,
+      windowEnd: true,
+      readingsCount: true,
+      severity: true,
+      score: true,
+      expectedValue: true,
+      observedValue: true,
+      details: true,
+    },
+  });
+
+  return incidents.map((incident) => normalizeIncident(incident));
 }

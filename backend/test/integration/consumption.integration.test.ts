@@ -265,8 +265,64 @@ test("GET /homes/:homeId/consumption suma devices del home en hourly", async () 
   assert.equal(asNumber(response.body.series[1].energyWh), 15);
 });
 
-test("Consumption respeta ownership y valida rango maximo", async () => {
+test("GET /homes/:homeId/consumption en auto resuelve hourly y rechaza raw", async () => {
   const suffix = Date.now() + 4;
+  const user = await registerUser(`consumption-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, `consumption-home-auto-${suffix}`);
+  const device = await createDevice(user.token, home.id, `auto-${suffix}`);
+
+  await prisma.deviceUsageHourly.createMany({
+    data: [
+      {
+        deviceId: device.id,
+        hourTs: new Date("2026-03-24T00:00:00.000Z"),
+        energyWh: 12,
+        avgPowerW: 60,
+        maxPowerW: 75,
+        minPowerW: 45,
+        samplesCount: 2,
+      },
+      {
+        deviceId: device.id,
+        hourTs: new Date("2026-03-24T01:00:00.000Z"),
+        energyWh: 18,
+        avgPowerW: 90,
+        maxPowerW: 110,
+        minPowerW: 70,
+        samplesCount: 3,
+      },
+    ],
+  });
+
+  const autoResponse = await request(app)
+    .get(`/homes/${home.id}/consumption`)
+    .set("authorization", `Bearer ${user.token}`)
+    .query({
+      from: "2026-03-24T00:00:00.000Z",
+      to: "2026-03-24T06:00:00.000Z",
+    });
+
+  assert.equal(autoResponse.status, 200);
+  assert.equal(autoResponse.body.granularityRequested, "auto");
+  assert.equal(autoResponse.body.granularityResolved, "hourly");
+  assert.equal(autoResponse.body.series.length, 2);
+  assert.equal(asNumber(autoResponse.body.series[0].energyWh), 12);
+
+  const invalidRaw = await request(app)
+    .get(`/homes/${home.id}/consumption`)
+    .set("authorization", `Bearer ${user.token}`)
+    .query({
+      from: "2026-03-24T00:00:00.000Z",
+      to: "2026-03-24T06:00:00.000Z",
+      granularity: "raw",
+    });
+
+  assert.equal(invalidRaw.status, 400);
+  assert.equal(invalidRaw.body.error, "INVALID_GRANULARITY_FOR_RANGE");
+});
+
+test("Consumption respeta ownership y valida rango maximo", async () => {
+  const suffix = Date.now() + 5;
   const userA = await registerUser(`consumption-it-a-${suffix}@example.com`);
   const userB = await registerUser(`consumption-it-b-${suffix}@example.com`);
   const home = await createHome(userA.token, `consumption-home-owned-${suffix}`);
@@ -296,7 +352,7 @@ test("Consumption respeta ownership y valida rango maximo", async () => {
 });
 
 test("Consumption devuelve series vacia cuando no hay datos en el rango", async () => {
-  const suffix = Date.now() + 5;
+  const suffix = Date.now() + 6;
   const user = await registerUser(`consumption-it-a-${suffix}@example.com`);
   const home = await createHome(user.token, `consumption-home-empty-${suffix}`);
   const device = await createDevice(user.token, home.id, `empty-${suffix}`);
