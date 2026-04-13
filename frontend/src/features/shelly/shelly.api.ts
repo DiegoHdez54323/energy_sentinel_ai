@@ -1,6 +1,9 @@
 import type {
   AuthenticatedShellyRequest,
   RefreshShellyIntegrationResponse,
+  ShellyDiscoveryResponse,
+  ShellyImportPayload,
+  ShellyImportResponse,
   ShellyIntegrationResponse,
   StartShellyOAuthResponse,
 } from './shelly.types';
@@ -28,4 +31,24 @@ export function deleteShellyIntegration(authenticatedRequest: AuthenticatedShell
   return authenticatedRequest<null>('/integrations/shelly', {
     method: 'DELETE',
   });
+}
+
+export function discoverShellyDevices(authenticatedRequest: AuthenticatedShellyRequest) {
+  return authenticatedRequest<ShellyDiscoveryResponse>('/integrations/shelly/devices/discover', {
+    method: 'POST',
+  });
+}
+
+export function importShellyDevices(
+  authenticatedRequest: AuthenticatedShellyRequest,
+  homeId: string,
+  payload: ShellyImportPayload
+) {
+  return authenticatedRequest<ShellyImportResponse>(
+    `/integrations/shelly/homes/${homeId}/devices/import`,
+    {
+      body: payload,
+      method: 'POST',
+    }
+  );
 }

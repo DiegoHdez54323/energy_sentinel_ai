@@ -166,22 +166,11 @@ export default function ShellyIntegrationScreen() {
             <Animated.View entering={FadeInDown.delay(180).duration(440)}>
               <PrimaryButton
                 accessibilityLabel="Descubrir dispositivos Shelly"
-                disabled
                 label="Descubrir dispositivos Shelly"
-                onPress={() => undefined}
+                onPress={() => router.push('/shelly-discovery')}
               />
-              <Text style={styles.disabledHint}>
-                Discovery e importacion quedan para el siguiente sprint.
-              </Text>
             </Animated.View>
           ) : null}
-
-          <Animated.View entering={FadeInDown.delay(220).duration(460)} style={styles.endpointCard}>
-            <Text style={styles.endpointText}>
-              <Text style={styles.endpointStrong}>Endpoints:</Text> GET /integrations/shelly ·
-              POST /integrations/shelly
-            </Text>
-          </Animated.View>
         </ScrollView>
       </SafeAreaView>
     </ScreenBackground>
@@ -575,28 +564,6 @@ const styles = StyleSheet.create({
     color: AppColors.mutedText,
     fontSize: 12,
     lineHeight: 18,
-  },
-  disabledHint: {
-    marginTop: AppSpacing.sm,
-    color: AppColors.mutedText,
-    fontSize: 12,
-    textAlign: 'center',
-  },
-  endpointCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: AppColors.cardBorder,
-    backgroundColor: MUTED_CARD,
-    padding: AppSpacing.lg,
-  },
-  endpointText: {
-    color: AppColors.mutedText,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  endpointStrong: {
-    color: AppColors.text,
-    fontWeight: AppTypography.medium,
   },
   pressed: {
     opacity: 0.84,

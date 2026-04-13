@@ -1,6 +1,6 @@
 import { isApiError } from '@/lib/api/api-client';
 
-type ShellyErrorContext = 'connect' | 'delete' | 'list' | 'refresh';
+type ShellyErrorContext = 'connect' | 'delete' | 'discover' | 'import' | 'list' | 'refresh';
 
 export function getShellyErrorMessage(error: unknown, context: ShellyErrorContext) {
   if (isApiError(error)) {
@@ -9,11 +9,20 @@ export function getShellyErrorMessage(error: unknown, context: ShellyErrorContex
     }
 
     if (
+      error.code === 'SHELLY_DISCOVERY_FAILED' ||
       error.code === 'SHELLY_TOKEN_EXCHANGE_FAILED' ||
       error.code === 'INVALID_SHELLY_ACCESS_TOKEN' ||
       error.code === 'SHELLY_HOST_MISMATCH'
     ) {
       return 'Shelly no pudo validar la conexion. Intenta conectar tu cuenta de nuevo.';
+    }
+
+    if (error.code === 'HOME_NOT_FOUND') {
+      return 'Selecciona un hogar valido antes de importar dispositivos.';
+    }
+
+    if (error.code === 'INVALID_BODY') {
+      return 'Revisa los dispositivos seleccionados e intenta de nuevo.';
     }
 
     if (error.code === 'UNAUTHORIZED') {
@@ -27,6 +36,14 @@ export function getShellyErrorMessage(error: unknown, context: ShellyErrorContex
 
   if (context === 'delete') {
     return 'No se pudo desconectar Shelly.';
+  }
+
+  if (context === 'discover') {
+    return 'No se pudieron buscar dispositivos Shelly.';
+  }
+
+  if (context === 'import') {
+    return 'No se pudieron importar los dispositivos seleccionados.';
   }
 
   if (context === 'refresh') {
