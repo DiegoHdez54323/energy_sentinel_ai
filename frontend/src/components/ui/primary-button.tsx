@@ -5,6 +5,7 @@ import { AppColors, AppGradients, AppRadius, AppTypography } from '@/constants/d
 type PrimaryButtonProps = {
   accessibilityLabel?: string;
   disabled?: boolean;
+  fullWidth?: boolean;
   label: string;
   onPress: () => void;
 };
@@ -14,6 +15,7 @@ const PRIMARY_GRADIENT = { experimental_backgroundImage: AppGradients.primary } 
 export function PrimaryButton({
   accessibilityLabel,
   disabled = false,
+  fullWidth = true,
   label,
   onPress,
 }: PrimaryButtonProps) {
@@ -23,7 +25,10 @@ export function PrimaryButton({
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.pressable, pressed && !disabled && styles.pressed]}>
+      style={({ pressed }) => [
+        fullWidth && styles.fullWidth,
+        pressed && !disabled && styles.pressed,
+      ]}>
       <View style={[styles.inner, PRIMARY_GRADIENT, disabled && styles.disabled]}>
         <Text style={styles.label}>{label}</Text>
       </View>
@@ -32,7 +37,7 @@ export function PrimaryButton({
 }
 
 const styles = StyleSheet.create({
-  pressable: {
+  fullWidth: {
     width: '100%',
   },
   inner: {

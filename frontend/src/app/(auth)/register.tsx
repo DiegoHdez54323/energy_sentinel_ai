@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { startTransition, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -52,9 +52,6 @@ export default function RegisterScreen() {
 
     try {
       await register(toRegisterPayload(values));
-      startTransition(() => {
-        router.replace('/home');
-      });
     } catch (error) {
       Alert.alert('No se pudo crear la cuenta', getAuthErrorMessage(error, 'register'));
     } finally {

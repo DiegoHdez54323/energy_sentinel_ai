@@ -9,9 +9,16 @@ export const AppColors = {
   primary: '#2680D9',
   primaryBright: '#4799EB',
   primaryDeep: '#2952A3',
+  secondary: '#202E3C',
+  secondaryText: '#9FBFDF',
+  mutedSurface: '#23272F',
   border: '#272C35',
+  anomaly: '#D2382D',
+  destructive: '#DB3125',
+  success: '#39AC79',
   frostedSurface: 'rgba(255, 255, 255, 0.15)',
   frostedBorder: 'rgba(255, 255, 255, 0.2)',
+  cardBorder: 'rgba(39, 44, 53, 0.5)',
   loaderDot: 'rgba(255, 255, 255, 0.4)',
 } as const;
 

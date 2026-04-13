@@ -3,12 +3,12 @@ import {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useReducer,
   useRef,
 } from 'react';
 
 import { apiRequest, isAuthApiError } from '@/lib/api/api-client';
+import { clearActiveHomeSelection } from '@/features/homes/active-home.storage';
 import { loginRequest, logoutRequest, meRequest, mergeAuthUsers, refreshRequest, registerRequest } from './auth.api';
 import { clearStoredAuthSession, readStoredAuthSession, writeStoredAuthSession } from './auth.storage';
 import type {
@@ -108,6 +108,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     refreshPromiseRef.current = null;
     sessionRef.current = null;
     await clearStoredAuthSession();
+    await clearActiveHomeSelection();
     dispatch({ type: 'SET_ANONYMOUS' });
   }
 
@@ -183,11 +184,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   async function login(payload: LoginPayload) {
     const session = await loginRequest(payload);
+    await clearActiveHomeSelection();
     await persistSession(session);
   }
 
   async function register(payload: RegisterPayload) {
     const session = await registerRequest(payload);
+    await clearActiveHomeSelection();
     await persistSession(session);
   }
 
@@ -232,18 +235,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }
 
-  const value = useMemo<AuthContextValue>(
-    () => ({
-      authenticatedRequest,
-      login,
-      logout,
-      register,
-      status: state.status,
-      tokens: state.tokens,
-      user: state.user,
-    }),
-    [state.status, state.tokens, state.user]
-  );
+  const value = {
+    authenticatedRequest,
+    login,
+    logout,
+    register,
+    status: state.status,
+    tokens: state.tokens,
+    user: state.user,
+  } satisfies AuthContextValue;
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

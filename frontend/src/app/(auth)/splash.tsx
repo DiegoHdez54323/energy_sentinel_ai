@@ -1,6 +1,6 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { StyleSheet, Text } from 'react-native';
 import Animated, {
   FadeInUp,
   FadeOut,
@@ -22,6 +22,7 @@ const DOT_DELAYS = [0, 200, 400] as const;
 export default function SplashScreen() {
   const [phase, setPhase] = useState<'logo' | 'text' | 'exit'>('logo');
   const [canLeave, setCanLeave] = useState(false);
+  const hasScheduledNavigationRef = useRef(false);
   const { status } = useAuth();
 
   useEffect(() => {
@@ -35,11 +36,12 @@ export default function SplashScreen() {
   }, []);
 
   useEffect(() => {
-    if (!canLeave || status === 'bootstrapping' || phase === 'exit') {
+    if (!canLeave || status === 'bootstrapping' || hasScheduledNavigationRef.current) {
       return;
     }
 
     const destination = status === 'authenticated' ? '/home' : '/login';
+    hasScheduledNavigationRef.current = true;
     setPhase('exit');
 
     const navigationTimer = setTimeout(() => {
@@ -49,7 +51,7 @@ export default function SplashScreen() {
     return () => {
       clearTimeout(navigationTimer);
     };
-  }, [canLeave, phase, status]);
+  }, [canLeave, status]);
 
   return (
     <ScreenBackground variant="energy">
