@@ -12,14 +12,7 @@ import {
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, {
-  Defs,
-  LinearGradient,
-  Line,
-  Path,
-  Stop,
-  Text as SvgText,
-} from 'react-native-svg';
+import { LineChart, type lineDataItem } from 'react-native-gifted-charts';
 
 import { MobileShell } from '@/components/navigation/mobile-shell';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -55,6 +48,12 @@ const STATUS_COLORS = {
   normal: AppColors.success,
   warning: '#D99A2B',
 } as const satisfies Record<DeviceDetailStatus, string>;
+
+type ChartPoint = lineDataItem & {
+  energyWh: number;
+  powerW: number;
+  timestamp: string;
+};
 
 export default function DeviceDetailScreen() {
   const params = useLocalSearchParams<{ deviceId?: string }>();
@@ -281,29 +280,13 @@ function LoadingState() {
 function ConsumptionChart({ series }: { series: DeviceConsumptionPoint[] }) {
   const { width: screenWidth } = useWindowDimensions();
   const width = Math.min(screenWidth - 72, 360);
-  const height = 180;
-  const chartHeight = 136;
-  const chartTop = 8;
-  const chartLeft = 8;
-  const chartWidth = width - chartLeft * 2;
-  const values = series.map((point) => point.avgPowerW ?? point.maxPowerW ?? 0);
-  const maxValue = Math.max(1, ...values);
-  const points = values.map((value, index) => {
-    const x = values.length <= 1
-      ? chartLeft + chartWidth / 2
-      : chartLeft + (index / (values.length - 1)) * chartWidth;
-    const y = chartTop + chartHeight - (value / maxValue) * chartHeight;
-
-    return { x, y };
-  });
-  const linePath = pointsToPath(points);
-  const areaPath = pointsToAreaPath(points, chartTop + chartHeight);
-  const firstLabel = formatChartTick(series.at(0)?.ts);
-  const lastLabel = formatChartTick(series.at(-1)?.ts);
+  const chartData = buildChartData(series);
+  const maxValue = getRoundedMaxValue(chartData);
+  const spacing = getChartSpacing(width, chartData.length);
 
   if (series.length === 0) {
     return (
-      <View style={[styles.emptyChart, { height }]}>
+      <View style={styles.emptyChart}>
         <Feather color={AppColors.mutedText} name="bar-chart-2" size={24} />
         <Text style={styles.emptyChartText}>Sin datos de consumo para este periodo</Text>
       </View>
@@ -311,42 +294,120 @@ function ConsumptionChart({ series }: { series: DeviceConsumptionPoint[] }) {
   }
 
   return (
-    <Svg height={height} width={width}>
-      <Defs>
-        <LinearGradient id="deviceEnergyGradient" x1="0" x2="0" y1="0" y2="1">
-          <Stop offset="0%" stopColor={AppColors.primary} stopOpacity="0.32" />
-          <Stop offset="100%" stopColor={AppColors.primary} stopOpacity="0.03" />
-        </LinearGradient>
-      </Defs>
+    <View style={styles.chartWrapper}>
+      <View style={styles.axisCaptionRow}>
+        <Text style={styles.axisCaption}>Power (W)</Text>
+        <Text style={styles.axisCaption}>Hora</Text>
+      </View>
+      <LineChart
+        adjustToWidth
+        allowFontScaling={false}
+        areaChart
+        backgroundColor="transparent"
+        color={AppColors.primary}
+        curved
+        data={chartData}
+        dataPointsColor={AppColors.primary}
+        dataPointsRadius={2.5}
+        disableScroll={chartData.length <= 8}
+        endFillColor={AppColors.primary}
+        endOpacity={0.03}
+        height={144}
+        initialSpacing={8}
+        maxValue={maxValue}
+        noOfSections={4}
+        pointerConfig={{
+          activatePointersInstantlyOnTouch: true,
+          autoAdjustPointerLabelPosition: true,
+          pointerColor: AppColors.primary,
+          pointerLabelComponent: renderPointerLabel,
+          pointerLabelHeight: 68,
+          pointerLabelWidth: 128,
+          pointerStripColor: 'rgba(129, 136, 152, 0.36)',
+          pointerStripWidth: 1,
+          radius: 5,
+          showPointerStrip: true,
+        }}
+        rulesColor="rgba(129, 136, 152, 0.16)"
+        rulesThickness={1}
+        spacing={spacing}
+        startFillColor={AppColors.primary}
+        startOpacity={0.3}
+        thickness={2.5}
+        width={width - 52}
+        xAxisColor="rgba(129, 136, 152, 0.24)"
+        xAxisLabelTextStyle={styles.chartAxisText}
+        xAxisLabelsHeight={24}
+        xAxisThickness={1}
+        yAxisColor="rgba(129, 136, 152, 0.24)"
+        yAxisLabelSuffix=" W"
+        yAxisLabelWidth={48}
+        yAxisTextStyle={styles.chartAxisText}
+        yAxisThickness={1}
+      />
+    </View>
+  );
+}
 
-      {[0, 0.5, 1].map((position) => {
-        const y = chartTop + position * chartHeight;
+function buildChartData(series: DeviceConsumptionPoint[]): ChartPoint[] {
+  const visibleLabelIndexes = getVisibleLabelIndexes(series.length);
 
-        return (
-          <Line
-            key={position}
-            stroke="rgba(129, 136, 152, 0.16)"
-            strokeWidth={1}
-            x1={chartLeft}
-            x2={chartLeft + chartWidth}
-            y1={y}
-            y2={y}
-          />
-        );
-      })}
+  return series.map((point, index) => {
+    const powerW = Math.round(point.avgPowerW ?? point.maxPowerW ?? 0);
 
-      {areaPath ? <Path d={areaPath} fill="url(#deviceEnergyGradient)" /> : null}
-      {linePath ? (
-        <Path d={linePath} fill="none" stroke={AppColors.primary} strokeLinecap="round" strokeWidth={2.5} />
-      ) : null}
+    return {
+      energyWh: point.energyWh,
+      label: visibleLabelIndexes.has(index) ? formatChartTick(point.ts) : '',
+      powerW,
+      timestamp: point.ts,
+      value: powerW,
+    };
+  });
+}
 
-      <SvgText fill={AppColors.mutedText} fontSize="11" x={chartLeft} y={height - 8}>
-        {firstLabel}
-      </SvgText>
-      <SvgText fill={AppColors.mutedText} fontSize="11" textAnchor="end" x={chartLeft + chartWidth} y={height - 8}>
-        {lastLabel}
-      </SvgText>
-    </Svg>
+function getVisibleLabelIndexes(length: number) {
+  if (length <= 1) {
+    return new Set([0]);
+  }
+
+  const indexes = new Set<number>();
+  const slots = Math.min(4, length);
+
+  for (let index = 0; index < slots; index += 1) {
+    indexes.add(Math.round((index / (slots - 1)) * (length - 1)));
+  }
+
+  return indexes;
+}
+
+function getRoundedMaxValue(data: ChartPoint[]) {
+  const maxPower = Math.max(1, ...data.map((point) => point.powerW));
+  const magnitude = maxPower >= 1000 ? 500 : maxPower >= 200 ? 100 : 50;
+
+  return Math.ceil(maxPower / magnitude) * magnitude;
+}
+
+function getChartSpacing(width: number, length: number) {
+  if (length <= 1) {
+    return width / 2;
+  }
+
+  return Math.max(28, Math.min(54, (width - 52) / Math.max(length - 1, 1)));
+}
+
+function renderPointerLabel(items: ChartPoint | ChartPoint[]) {
+  const point = Array.isArray(items) ? items[0] : items;
+
+  if (!point) {
+    return null;
+  }
+
+  return (
+    <View style={styles.pointerTooltip}>
+      <Text style={styles.pointerTime}>{formatPointerTime(point.timestamp)}</Text>
+      <Text style={styles.pointerPower}>{point.powerW} W</Text>
+      <Text style={styles.pointerEnergy}>{point.energyWh.toFixed(1)} Wh</Text>
+    </View>
   );
 }
 
@@ -440,30 +501,6 @@ function StatusBadge({ status }: { status: DeviceDetailStatus }) {
   );
 }
 
-function pointsToPath(points: { x: number; y: number }[]) {
-  if (points.length === 0) {
-    return '';
-  }
-
-  return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
-}
-
-function pointsToAreaPath(points: { x: number; y: number }[], baselineY: number) {
-  if (points.length === 0) {
-    return '';
-  }
-
-  const linePath = pointsToPath(points);
-  const first = points[0];
-  const last = points.at(-1);
-
-  if (!first || !last) {
-    return '';
-  }
-
-  return `${linePath} L ${last.x} ${baselineY} L ${first.x} ${baselineY} Z`;
-}
-
 function formatChartTick(value: string | undefined) {
   if (!value) {
     return '';
@@ -472,6 +509,15 @@ function formatChartTick(value: string | undefined) {
   return new Intl.DateTimeFormat('es-MX', {
     hour: '2-digit',
     minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function formatPointerTime(value: string) {
+  return new Intl.DateTimeFormat('es-MX', {
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: 'short',
   }).format(new Date(value));
 }
 
@@ -632,7 +678,54 @@ const styles = StyleSheet.create({
     backgroundColor: CARD_BACKGROUND,
     padding: AppSpacing.lg,
   },
+  chartWrapper: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  axisCaptionRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingLeft: 48,
+    paddingRight: 6,
+    marginBottom: 4,
+  },
+  axisCaption: {
+    color: AppColors.mutedText,
+    fontSize: 11,
+    fontWeight: AppTypography.medium,
+  },
+  chartAxisText: {
+    color: AppColors.mutedText,
+    fontSize: 10,
+  },
+  pointerTooltip: {
+    minWidth: 118,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: AppColors.cardBorder,
+    backgroundColor: AppColors.surface,
+    paddingHorizontal: AppSpacing.md,
+    paddingVertical: AppSpacing.sm,
+  },
+  pointerTime: {
+    color: AppColors.mutedText,
+    fontSize: 11,
+  },
+  pointerPower: {
+    marginTop: 2,
+    color: AppColors.text,
+    fontSize: 16,
+    fontWeight: AppTypography.bold,
+  },
+  pointerEnergy: {
+    marginTop: 1,
+    color: AppColors.primaryBright,
+    fontSize: 11,
+    fontWeight: AppTypography.medium,
+  },
   emptyChart: {
+    height: 180,
     alignItems: 'center',
     justifyContent: 'center',
     gap: AppSpacing.sm,
