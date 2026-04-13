@@ -6,6 +6,7 @@ import { requireAuth } from "../../common/auth/requireAuth.js";
 import {
   createHomeHandler,
   deleteHomeByIdHandler,
+  getHomeDashboardHandler,
   getHomeByIdHandler,
   listHomesHandler,
   updateHomeByIdHandler,
@@ -27,6 +28,12 @@ homesRouter.post(
   createHomeHandler,
 );
 homesRouter.get("/", listHomesHandler);
+homesRouter.get(
+  "/:id/dashboard",
+  validateRequest({ params: homeParamsSchema }),
+  requireOwnedHomeParam("id"),
+  getHomeDashboardHandler,
+);
 homesRouter.get(
   "/:id",
   validateRequest({ params: homeParamsSchema }),
