@@ -98,6 +98,22 @@ export type DeviceChartPeriod = '24h' | '30d' | '7d';
 
 export type DeviceDetailStatus = 'anomaly' | 'normal' | 'warning';
 
+export type DeviceListItem = {
+  currentWatts: number;
+  hasAlert: boolean;
+  id: string;
+  isOn: boolean;
+  name: string;
+  status: DeviceDetailStatus;
+  vendor: string;
+};
+
+export type DeviceListSummary = {
+  activeCount: number;
+  alertCount: number;
+  totalCount: number;
+};
+
 export type DeviceSummaryPeriod = {
   energyWh: number;
   previousEnergyWh: number;

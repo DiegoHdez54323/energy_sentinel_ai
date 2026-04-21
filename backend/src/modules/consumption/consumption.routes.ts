@@ -7,9 +7,11 @@ import { validateRequest } from "../../common/validation/validate.js";
 import {
   getDeviceConsumptionHandler,
   getHomeConsumptionHandler,
+  getHomeConsumptionSummaryHandler,
 } from "./consumption.controller.js";
 import {
   consumptionQuerySchema,
+  consumptionSummaryQuerySchema,
   deviceConsumptionParamsSchema,
   homeConsumptionParamsSchema,
 } from "./consumption.schemas.js";
@@ -31,4 +33,11 @@ consumptionRouter.get(
   validateRequest({ params: homeConsumptionParamsSchema, query: consumptionQuerySchema }),
   requireOwnedHomeParam("homeId"),
   getHomeConsumptionHandler,
+);
+
+consumptionRouter.get(
+  "/homes/:homeId/consumption/summary",
+  validateRequest({ params: homeConsumptionParamsSchema, query: consumptionSummaryQuerySchema }),
+  requireOwnedHomeParam("homeId"),
+  getHomeConsumptionSummaryHandler,
 );

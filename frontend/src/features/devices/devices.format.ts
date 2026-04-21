@@ -3,6 +3,8 @@ import type {
   DeviceChartPeriod,
   DeviceConsumptionPoint,
   DeviceDetailStatus,
+  DeviceListItem,
+  DeviceListSummary,
   DeviceModelState,
   DeviceReadingSummary,
   DeviceSummaryPeriod,
@@ -19,6 +21,24 @@ type DateParts = {
 
 export function formatWatts(value: number | null | undefined) {
   return `${Math.max(0, Math.round(value ?? 0))}`;
+}
+
+export function buildDeviceListSummary(devices: DeviceListItem[]): DeviceListSummary {
+  return {
+    activeCount: devices.filter((device) => device.isOn).length,
+    alertCount: devices.filter((device) => device.hasAlert).length,
+    totalCount: devices.length,
+  };
+}
+
+export function filterDeviceListItems(devices: DeviceListItem[], query: string) {
+  const normalizedQuery = normalizeSearchValue(query);
+
+  if (!normalizedQuery) {
+    return devices;
+  }
+
+  return devices.filter((device) => normalizeSearchValue(device.name).includes(normalizedQuery));
 }
 
 export function formatEnergyKwh(energyWh: number) {
@@ -108,6 +128,14 @@ export function getDevicePowerState(latestReading: DeviceReadingSummary | null) 
     isOn,
     label: isOn ? 'Encendido' : 'Apagado',
   };
+}
+
+function normalizeSearchValue(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
 }
 
 export function getChartRange(period: DeviceChartPeriod) {

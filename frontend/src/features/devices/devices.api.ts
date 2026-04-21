@@ -18,6 +18,7 @@ export function getDeviceConsumption(
   options: {
     deviceId: string;
     from: string;
+    granularity?: 'auto' | 'daily' | 'hourly' | 'raw';
     signal?: AbortSignal;
     to: string;
   }
@@ -25,7 +26,7 @@ export function getDeviceConsumption(
   const query = [
     `from=${encodeURIComponent(options.from)}`,
     `to=${encodeURIComponent(options.to)}`,
-    'granularity=auto',
+    `granularity=${options.granularity ?? 'auto'}`,
   ].join('&');
 
   return authenticatedRequest<DeviceConsumptionResponse>(

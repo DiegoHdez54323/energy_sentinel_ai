@@ -10,6 +10,12 @@ export type ConsumptionSeriesRow = {
   samplesCount: number | null;
 };
 
+export type HomeConsumptionBreakdownRow = {
+  deviceId: string;
+  energyWh: number | null;
+  name: string;
+};
+
 function normalizeRows(rows: ConsumptionSeriesRow[]) {
   return rows.map((row) => ({
     ts: row.ts instanceof Date ? row.ts.toISOString() : new Date(row.ts).toISOString(),
@@ -174,4 +180,59 @@ export async function listHomeDailyConsumption(options: {
   `;
 
   return normalizeRows(rows);
+}
+
+function normalizeBreakdownRows(rows: HomeConsumptionBreakdownRow[]) {
+  return rows.map((row) => ({
+    deviceId: row.deviceId,
+    energyWh: row.energyWh ?? 0,
+    name: row.name,
+  }));
+}
+
+export async function listHomeHourlyConsumptionBreakdown(options: {
+  homeId: string;
+  from: Date;
+  to: Date;
+}) {
+  const rows = await prisma.$queryRaw<HomeConsumptionBreakdownRow[]>`
+    SELECT
+      d."id" AS "deviceId",
+      d."display_name" AS "name",
+      COALESCE(SUM(du."energy_wh"), 0)::double precision AS "energyWh"
+    FROM "devices" d
+    JOIN "device_usage_hourly" du ON du."device_id" = d."id"
+    WHERE d."home_id" = ${options.homeId}
+      AND du."hour_ts" >= ${options.from}
+      AND du."hour_ts" < ${options.to}
+    GROUP BY d."id", d."display_name"
+    HAVING COALESCE(SUM(du."energy_wh"), 0) > 0
+    ORDER BY "energyWh" DESC, d."display_name" ASC
+  `;
+
+  return normalizeBreakdownRows(rows);
+}
+
+export async function listHomeDailyConsumptionBreakdown(options: {
+  homeId: string;
+  from: Date;
+  to: Date;
+}) {
+  const rows = await prisma.$queryRaw<HomeConsumptionBreakdownRow[]>`
+    SELECT
+      d."id" AS "deviceId",
+      d."display_name" AS "name",
+      COALESCE(SUM(du."energy_wh"), 0)::double precision AS "energyWh"
+    FROM "devices" d
+    JOIN "homes" h ON h."id" = d."home_id"
+    JOIN "device_usage_daily" du ON du."device_id" = d."id"
+    WHERE d."home_id" = ${options.homeId}
+      AND ((du."date"::timestamp) AT TIME ZONE h."timezone") >= ${options.from}
+      AND ((du."date"::timestamp) AT TIME ZONE h."timezone") < ${options.to}
+    GROUP BY d."id", d."display_name"
+    HAVING COALESCE(SUM(du."energy_wh"), 0) > 0
+    ORDER BY "energyWh" DESC, d."display_name" ASC
+  `;
+
+  return normalizeBreakdownRows(rows);
 }

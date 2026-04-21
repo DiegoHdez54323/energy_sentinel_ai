@@ -38,6 +38,7 @@ export function getHomeConsumption(
   authenticatedRequest: AuthenticatedHomesRequest,
   options: {
     from: string;
+    granularity?: 'auto' | 'daily' | 'hourly';
     homeId: string;
     signal?: AbortSignal;
     to: string;
@@ -46,7 +47,7 @@ export function getHomeConsumption(
   const query = [
     `from=${encodeURIComponent(options.from)}`,
     `to=${encodeURIComponent(options.to)}`,
-    'granularity=hourly',
+    `granularity=${options.granularity ?? 'hourly'}`,
   ].join('&');
 
   return authenticatedRequest<HomeConsumptionResponse>(

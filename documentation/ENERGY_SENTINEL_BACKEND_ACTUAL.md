@@ -306,6 +306,7 @@ Responsabilidades:
 - exponer series temporales consumibles por frontend
 - devolver consumo por device
 - devolver consumo total por home
+- devolver vistas agregadas listas para pantallas del frontend
 - resolver granularidad automática por rango
 - reutilizar `device_readings`, `device_usage_hourly` y `device_usage_daily` sin exponer tablas internas
 
@@ -313,6 +314,7 @@ Reglas actuales:
 
 - `GET /devices/:deviceId/consumption` usa ownership por device
 - `GET /homes/:homeId/consumption` usa ownership por home
+- `GET /homes/:homeId/consumption/summary` usa ownership por home
 - para `devices`, `granularity=auto` resuelve:
   - `raw` para ventanas `<= 6h`
   - `hourly` para ventanas `> 6h` y `<= 14d`
@@ -322,6 +324,8 @@ Reglas actuales:
   - `daily` para ventanas `> 14d`
 - `granularity=raw` solo se acepta para `devices` con ventanas `<= 24h`
 - `granularity=raw` no se acepta para `homes`
+- el summary por home usa periodos semánticos `today | week | month`
+- el summary por home calcula rango actual, rango anterior, tendencia, promedio y breakdown por device en backend
 - el rango máximo expuesto en v1 es `90d`
 - la respuesta siempre devuelve un `series[]` homogéneo con:
   - `ts`
@@ -866,6 +870,106 @@ Errores relevantes v1:
 - `400 INVALID_RANGE`
 - `400 INVALID_GRANULARITY_FOR_RANGE`
 - `404 HOME_NOT_FOUND`
+- `404 HOME_NOT_FOUND`
+
+#### `GET /homes/:homeId/consumption/summary`
+
+Propósito:
+
+- devolver un resumen agregado listo para la pantalla de consumo del home
+- incluir serie temporal del periodo actual, comparación contra el periodo anterior y breakdown por device
+
+Auth:
+
+- requiere access token del backend
+- requiere ownership del home
+
+Query params:
+
+- `period`: `today | week | month`, opcional, default `week`
+
+Semántica de periodos:
+
+- `today`: desde medianoche local del home hasta ahora
+- `week`: desde lunes local 00:00 hasta ahora
+- `month`: desde el día 1 local 00:00 hasta ahora
+- `previous`: siempre se calcula como el intervalo inmediatamente anterior de la misma duración
+
+Granularidad resuelta:
+
+- `today` -> `hourly`
+- `week` -> `hourly`
+- `month` -> `daily`
+
+Ejemplo:
+
+```http
+GET /homes/93840b75-9632-49d4-8f39-b892620eef73/consumption/summary?period=week
+```
+
+Ejemplo de respuesta:
+
+```json
+{
+  "home": {
+    "id": "93840b75-9632-49d4-8f39-b892620eef73",
+    "userId": "ab5d7cbb-6c5b-4c2f-8dc0-49da2f4e4f37",
+    "name": "my-home",
+    "timezone": "Etc/UTC",
+    "createdAt": "2026-03-25T00:00:00.000Z",
+    "updatedAt": "2026-03-25T00:00:00.000Z"
+  },
+  "generatedAt": "2026-04-21T18:00:00.000Z",
+  "timezone": "Etc/UTC",
+  "period": "week",
+  "range": {
+    "current": {
+      "from": "2026-04-21T00:00:00.000Z",
+      "to": "2026-04-21T18:00:00.000Z"
+    },
+    "previous": {
+      "from": "2026-04-20T06:00:00.000Z",
+      "to": "2026-04-21T00:00:00.000Z"
+    }
+  },
+  "chart": {
+    "granularityResolved": "hourly",
+    "series": [
+      {
+        "ts": "2026-04-21T10:00:00.000Z",
+        "energyWh": 30,
+        "avgPowerW": 66.66666666666667,
+        "maxPowerW": 120,
+        "minPowerW": 40,
+        "samplesCount": 3
+      }
+    ]
+  },
+  "summary": {
+    "totalEnergyWh": 95,
+    "previousTotalEnergyWh": 80,
+    "trend": "up",
+    "trendPercent": 19,
+    "averageEnergyWh": 14,
+    "averageUnit": "day"
+  },
+  "breakdown": {
+    "deviceCount": 3,
+    "items": [
+      {
+        "deviceId": "7a9dd8a8-d7be-4f46-bb4c-a8ea0f53cfd1",
+        "name": "Cafetera",
+        "energyWh": 40,
+        "percentage": 42
+      }
+    ]
+  }
+}
+```
+
+Errores relevantes v1:
+
+- `400 INVALID_QUERY`
 - `404 HOME_NOT_FOUND`
 
 ### 7.5 Devices
