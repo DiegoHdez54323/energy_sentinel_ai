@@ -142,15 +142,23 @@ function DashboardContent({
   fallbackHomeName: string;
 }) {
   const activeAnomalies = dashboard.summary.activeAnomaliesCount;
+  const alert = dashboard.alert;
   const homeName = dashboard.home.name || fallbackHomeName;
 
   return (
     <>
       <Animated.View entering={FadeInUp.duration(420)} style={styles.header}>
-        <View>
+        <Pressable
+          accessibilityLabel="Cambiar hogar"
+          accessibilityRole="button"
+          onPress={() => router.push('/home')}
+          style={({ pressed }) => [styles.homeSelectorButton, pressed && styles.pressed]}>
           <Text style={styles.eyebrow}>Mi hogar</Text>
-          <Text style={styles.title}>{homeName}</Text>
-        </View>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>{homeName}</Text>
+            <Feather color={AppColors.mutedText} name="chevron-down" size={18} />
+          </View>
+        </Pressable>
 
         {activeAnomalies > 0 ? (
           <StatusBadge label={`${activeAnomalies} alerta`} size="md" status="anomaly" />
@@ -162,18 +170,18 @@ function DashboardContent({
         <ConsumptionSummary label="Esta semana" period={dashboard.summary.week} />
       </Animated.View>
 
-      {dashboard.alert ? (
+      {alert ? (
         <Animated.View entering={FadeInDown.delay(140).duration(440)}>
           <Pressable
             accessibilityRole="button"
-            onPress={() => router.push('/devices')}
+            onPress={() => router.push(`/devices/${alert.deviceId}`)}
             style={({ pressed }) => [styles.alertBanner, pressed && styles.pressed]}>
             <View style={styles.alertIcon}>
               <Feather color={AppColors.anomaly} name="zap" size={20} />
             </View>
             <View style={styles.alertTextBlock}>
               <Text style={styles.alertTitle}>Anomalía detectada</Text>
-              <Text style={styles.alertText}>{dashboard.alert.message}</Text>
+              <Text style={styles.alertText}>{alert.message}</Text>
             </View>
             <Feather color={AppColors.mutedText} name="chevron-right" size={16} />
           </Pressable>
@@ -266,7 +274,7 @@ function DeviceCard({ device }: { device: DashboardDevice }) {
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={() => router.push('/devices')}
+      onPress={() => router.push(`/devices/${device.id}`)}
       style={({ pressed }) => [styles.deviceCard, pressed && styles.deviceCardPressed]}>
       <View style={[styles.deviceIcon, isOn ? PRIMARY_GRADIENT : styles.deviceIconOff]}>
         <Feather
@@ -334,6 +342,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: AppSpacing.md,
   },
+  homeSelectorButton: {
+    flex: 1,
+    alignItems: 'flex-start',
+    borderRadius: 12,
+  },
   eyebrow: {
     color: AppColors.mutedText,
     fontSize: 12,
@@ -341,8 +354,15 @@ const styles = StyleSheet.create({
     letterSpacing: 1.1,
     textTransform: 'uppercase',
   },
-  title: {
+  titleRow: {
+    maxWidth: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     marginTop: 2,
+  },
+  title: {
+    flexShrink: 1,
     color: AppColors.text,
     fontSize: 20,
     fontWeight: AppTypography.bold,

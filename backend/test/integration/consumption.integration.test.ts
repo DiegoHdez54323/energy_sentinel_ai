@@ -56,6 +56,45 @@ async function createDevice(token: string, homeId: string, suffix: string) {
   return response.body.device as { id: string; homeId: string };
 }
 
+type SummaryPeriod = "today" | "week" | "month";
+
+function getUtcSummaryRanges(period: SummaryPeriod) {
+  const now = new Date();
+  const currentFrom = period === "today"
+    ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    : period === "week"
+      ? getUtcWeekStart(now)
+      : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const currentTo = now;
+  const durationMs = Math.max(currentTo.getTime() - currentFrom.getTime(), 1);
+  const previousTo = new Date(currentFrom);
+  const previousFrom = new Date(previousTo.getTime() - durationMs);
+
+  return {
+    current: {
+      from: currentFrom,
+      to: currentTo,
+    },
+    previous: {
+      from: previousFrom,
+      to: previousTo,
+    },
+  };
+}
+
+function getUtcWeekStart(date: Date) {
+  const weekday = date.getUTCDay();
+  const daysSinceMonday = weekday === 0 ? 6 : Math.max(weekday - 1, 0);
+
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate() - daysSinceMonday,
+    ),
+  );
+}
+
 test.after(async () => {
   await prisma.user.deleteMany({ where: { email: { startsWith: "consumption-it-" } } });
   await prisma.$disconnect();
@@ -368,4 +407,171 @@ test("Consumption devuelve series vacia cuando no hay datos en el rango", async 
   assert.equal(response.status, 200);
   assert.equal(response.body.granularityResolved, "raw");
   assert.deepEqual(response.body.series, []);
+});
+
+test("GET /homes/:homeId/consumption/summary requiere auth y devuelve estado vacio", async () => {
+  const suffix = Date.now() + 7;
+  const user = await registerUser(`consumption-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, `consumption-summary-empty-${suffix}`);
+
+  const unauthorized = await request(app)
+    .get(`/homes/${home.id}/consumption/summary`)
+    .query({ period: "week" });
+
+  assert.equal(unauthorized.status, 401);
+
+  const response = await request(app)
+    .get(`/homes/${home.id}/consumption/summary`)
+    .set("authorization", `Bearer ${user.token}`)
+    .query({ period: "week" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.period, "week");
+  assert.equal(response.body.chart.granularityResolved, "hourly");
+  assert.deepEqual(response.body.chart.series, []);
+  assert.equal(response.body.summary.totalEnergyWh, 0);
+  assert.equal(response.body.summary.previousTotalEnergyWh, 0);
+  assert.equal(response.body.summary.averageUnit, "day");
+  assert.equal(response.body.breakdown.deviceCount, 0);
+  assert.deepEqual(response.body.breakdown.items, []);
+});
+
+test("GET /homes/:homeId/consumption/summary agrega week y breakdown por device", async () => {
+  const suffix = Date.now() + 8;
+  const user = await registerUser(`consumption-it-a-${suffix}@example.com`);
+  const home = await createHome(user.token, `consumption-summary-week-${suffix}`);
+  const deviceA = await createDevice(user.token, home.id, `summary-a-${suffix}`);
+  const deviceB = await createDevice(user.token, home.id, `summary-b-${suffix}`);
+  const deviceC = await createDevice(user.token, home.id, `summary-c-${suffix}`);
+  const ranges = getUtcSummaryRanges("week");
+  const currentHourA = new Date(ranges.current.from.getTime() + 2 * 60 * 60 * 1000);
+  const currentHourB = new Date(ranges.current.from.getTime() + 3 * 60 * 60 * 1000);
+  const previousHour = new Date(ranges.previous.from.getTime() + 2 * 60 * 60 * 1000);
+
+  await prisma.deviceUsageHourly.createMany({
+    data: [
+      {
+        deviceId: deviceA.id,
+        hourTs: currentHourA,
+        energyWh: 40,
+        avgPowerW: 120,
+        maxPowerW: 150,
+        minPowerW: 80,
+        samplesCount: 2,
+      },
+      {
+        deviceId: deviceB.id,
+        hourTs: currentHourB,
+        energyWh: 20,
+        avgPowerW: 60,
+        maxPowerW: 70,
+        minPowerW: 50,
+        samplesCount: 1,
+      },
+      {
+        deviceId: deviceA.id,
+        hourTs: previousHour,
+        energyWh: 15,
+        avgPowerW: 50,
+        maxPowerW: 55,
+        minPowerW: 45,
+        samplesCount: 1,
+      },
+      {
+        deviceId: deviceB.id,
+        hourTs: previousHour,
+        energyWh: 5,
+        avgPowerW: 20,
+        maxPowerW: 25,
+        minPowerW: 15,
+        samplesCount: 1,
+      },
+    ],
+  });
+
+  const response = await request(app)
+    .get(`/homes/${home.id}/consumption/summary`)
+    .set("authorization", `Bearer ${user.token}`)
+    .query({ period: "week" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.chart.granularityResolved, "hourly");
+  assert.equal(response.body.summary.totalEnergyWh, 60);
+  assert.equal(response.body.summary.previousTotalEnergyWh, 20);
+  assert.equal(response.body.summary.trend, "up");
+  assert.equal(response.body.summary.trendPercent, 200);
+  assert.equal(response.body.summary.averageUnit, "day");
+  assert.equal(response.body.breakdown.deviceCount, 3);
+  assert.equal(response.body.breakdown.items.length, 2);
+  assert.equal(response.body.breakdown.items[0].deviceId, deviceA.id);
+  assert.equal(response.body.breakdown.items[0].energyWh, 40);
+  assert.equal(response.body.breakdown.items[0].percentage, 67);
+  assert.equal(response.body.breakdown.items[1].deviceId, deviceB.id);
+  assert.equal(response.body.breakdown.items[1].energyWh, 20);
+  assert.equal(response.body.breakdown.items[1].percentage, 33);
+  assert.equal(response.body.chart.series.length, 2);
+});
+
+test("GET /homes/:homeId/consumption/summary resuelve month en daily y respeta ownership", async () => {
+  const suffix = Date.now() + 9;
+  const owner = await registerUser(`consumption-it-a-${suffix}@example.com`);
+  const foreign = await registerUser(`consumption-it-b-${suffix}@example.com`);
+  const home = await createHome(owner.token, `consumption-summary-month-${suffix}`);
+  const device = await createDevice(owner.token, home.id, `summary-month-${suffix}`);
+  const ranges = getUtcSummaryRanges("month");
+  const currentDate = new Date(Date.UTC(
+    ranges.current.from.getUTCFullYear(),
+    ranges.current.from.getUTCMonth(),
+    Math.min(ranges.current.from.getUTCDate() + 1, 28),
+  ));
+  const previousDate = new Date(Date.UTC(
+    ranges.previous.from.getUTCFullYear(),
+    ranges.previous.from.getUTCMonth(),
+    Math.min(ranges.previous.from.getUTCDate() + 1, 28),
+  ));
+
+  await prisma.deviceUsageDaily.createMany({
+    data: [
+      {
+        deviceId: device.id,
+        date: currentDate,
+        energyWh: 120,
+        avgPowerW: 80,
+        maxPowerW: 110,
+        minPowerW: 60,
+        samplesCount: 10,
+      },
+      {
+        deviceId: device.id,
+        date: previousDate,
+        energyWh: 60,
+        avgPowerW: 40,
+        maxPowerW: 55,
+        minPowerW: 25,
+        samplesCount: 8,
+      },
+    ],
+  });
+
+  const foreignResponse = await request(app)
+    .get(`/homes/${home.id}/consumption/summary`)
+    .set("authorization", `Bearer ${foreign.token}`)
+    .query({ period: "month" });
+
+  assert.equal(foreignResponse.status, 404);
+  assert.equal(foreignResponse.body.error, "HOME_NOT_FOUND");
+
+  const response = await request(app)
+    .get(`/homes/${home.id}/consumption/summary`)
+    .set("authorization", `Bearer ${owner.token}`)
+    .query({ period: "month" });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.period, "month");
+  assert.equal(response.body.chart.granularityResolved, "daily");
+  assert.equal(response.body.summary.totalEnergyWh, 120);
+  assert.equal(response.body.summary.previousTotalEnergyWh, 60);
+  assert.equal(response.body.summary.averageUnit, "day");
+  assert.equal(response.body.breakdown.deviceCount, 1);
+  assert.equal(response.body.breakdown.items[0].percentage, 100);
 });

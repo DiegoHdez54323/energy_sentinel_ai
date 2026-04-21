@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
-import { getDeviceConsumption, getHomeConsumption } from "./consumption.service.js";
-import type { ConsumptionQueryInput } from "./consumption.schemas.js";
+import { getDeviceConsumption, getHomeConsumption, getHomeConsumptionSummary } from "./consumption.service.js";
+import type { ConsumptionQueryInput, ConsumptionSummaryQueryInput } from "./consumption.schemas.js";
 
 function getOwnedDeviceOrThrow(req: Request) {
   if (!req.ownedDevice) {
@@ -55,6 +55,18 @@ export async function getHomeConsumptionHandler(req: Request, res: Response) {
     const payload = await getHomeConsumption(
       getOwnedHomeOrThrow(req),
       req.query as ConsumptionQueryInput,
+    );
+    return res.status(200).json(payload);
+  } catch (error) {
+    return handleConsumptionError(error, res);
+  }
+}
+
+export async function getHomeConsumptionSummaryHandler(req: Request, res: Response) {
+  try {
+    const payload = await getHomeConsumptionSummary(
+      getOwnedHomeOrThrow(req),
+      (req.query as ConsumptionSummaryQueryInput).period,
     );
     return res.status(200).json(payload);
   } catch (error) {
